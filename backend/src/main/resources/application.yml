@@ -1,0 +1,6 @@
+spring:
+    application:
+        name: cloud-file-service
+
+server:
+    port: 8080
