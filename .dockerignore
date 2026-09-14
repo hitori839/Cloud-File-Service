@@ -1,0 +1,17 @@
+.git
+.github
+.idea
+.vscode
+
+**/build
+**/.gradle
+
+README.md
+docs
+terraform
+k8s
+observability
+
+*.log
+.env
+*.pem
