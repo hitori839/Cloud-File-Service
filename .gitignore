@@ -41,8 +41,7 @@ out/
 !.env.example
 .aws/
 /aws/
-awscliv2.zip
-day3.txt
-day3-download.txt
-test-s3.txt
+/awscliv2.zip
+/day3*.txt
+/test-s3.txt
 *.pem
