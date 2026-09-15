@@ -1,83 +1,72 @@
 package com.example.backend.controller;
 
-import com.example.backend.domain.FileMetadata;
-import com.example.backend.dto.CreateFileRequest;
-import com.example.backend.dto.FileResponse;
-import com.example.backend.service.FileMetadataService;
-import jakarta.validation.Valid;
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
+import java.io.IOException;
+import java.util.UUID;
 
-import java.net.URI;
-import java.util.List;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
+
+import com.example.backend.storage.S3StorageService;
 
 @RestController
 @RequestMapping("/api/files")
 public class FileController {
 
-    private final FileMetadataService service;
+    private final S3StorageService storageService;
 
-    public FileController(
-            FileMetadataService service
-    ) {
-        this.service = service;
+    public FileController(S3StorageService storageService) {
+        this.storageService = storageService;
     }
 
     @PostMapping
-    public ResponseEntity<FileResponse> create(
-            @Valid
-            @RequestBody
-            CreateFileRequest request
+    public ResponseEntity<String> upload(
+            @RequestParam("file") MultipartFile file
+    ) throws IOException {
+
+        String originalName = file.getOriginalFilename();
+
+        if (originalName == null || originalName.isBlank()) {
+            originalName = "unknown";
+        }
+
+        String key = UUID.randomUUID() + "-" + originalName;
+
+        storageService.upload(key, file);
+
+        return ResponseEntity.ok(key);
+    }
+
+    @GetMapping("/{key}")
+    public ResponseEntity<byte[]> download(
+            @PathVariable String key
     ) {
-        FileMetadata metadata =
-                service.create(request);
 
-        FileResponse response =
-                FileResponse.from(metadata);
+        if (!storageService.exists(key)) {
+            return ResponseEntity.notFound().build();
+        }
 
-        URI location =
-                URI.create(
-                        "/api/files/" + response.id()
-                );
+        byte[] data = storageService.download(key);
 
-        return ResponseEntity
-                .created(location)
-                .body(response);
+        return ResponseEntity.ok()
+                .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                .body(data);
     }
 
-    @GetMapping
-    public ResponseEntity<List<FileResponse>>
-    findAll() {
-
-        List<FileResponse> response =
-                service.findAll()
-                        .stream()
-                        .map(FileResponse::from)
-                        .toList();
-
-        return ResponseEntity.ok(response);
-    }
-
-    @GetMapping("/{id}")
-    public ResponseEntity<FileResponse> findById(
-            @PathVariable Long id
-    ) {
-        FileMetadata metadata =
-                service.findById(id);
-
-        return ResponseEntity.ok(
-                FileResponse.from(metadata)
-        );
-    }
-
-    @DeleteMapping("/{id}")
+    @DeleteMapping("/{key}")
     public ResponseEntity<Void> delete(
-            @PathVariable Long id
+            @PathVariable String key
     ) {
-        service.delete(id);
 
-        return ResponseEntity
-                .noContent()
-                .build();
+        storageService.delete(key);
+
+        return ResponseEntity.noContent().build();
     }
 }
