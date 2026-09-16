@@ -1,71 +1,122 @@
 package com.example.backend.controller;
 
-import java.io.IOException;
-import java.util.UUID;
+import com.example.backend.dto.FileResponse;
+import com.example.backend.service.FileService;
 
+import org.springframework.core.io.ByteArrayResource;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.DeleteMapping;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
-import com.example.backend.storage.S3StorageService;
+import java.io.IOException;
+import java.util.List;
 
 @RestController
 @RequestMapping("/api/files")
 public class FileController {
 
-    private final S3StorageService storageService;
+    private final FileService fileService;
 
-    public FileController(S3StorageService storageService) {
-        this.storageService = storageService;
+    public FileController(FileService fileService) {
+        this.fileService = fileService;
     }
 
     @PostMapping
-    public ResponseEntity<String> upload(
-            @RequestParam("file") MultipartFile file
+    public ResponseEntity<FileResponse> upload(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(required = false)
+            Long folderId
     ) throws IOException {
 
-        String originalName = file.getOriginalFilename();
-
-        if (originalName == null || originalName.isBlank()) {
-            originalName = "unknown";
-        }
-
-        String key = UUID.randomUUID() + "-" + originalName;
-
-        storageService.upload(key, file);
-
-        return ResponseEntity.ok(key);
+        return ResponseEntity.ok(
+                fileService.upload(
+                        file,
+                        folderId
+                )
+        );
     }
 
-    @GetMapping("/{key}")
-    public ResponseEntity<byte[]> download(
-            @PathVariable String key
+    @GetMapping
+    public ResponseEntity<List<FileResponse>> getFiles(
+            @RequestParam(required = false)
+            Long folderId
     ) {
 
-        if (!storageService.exists(key)) {
-            return ResponseEntity.notFound().build();
-        }
+        return ResponseEntity.ok(
+                fileService.getFiles(folderId)
+        );
+    }
 
-        byte[] data = storageService.download(key);
+    @GetMapping("/{fileId}/download")
+    public ResponseEntity<ByteArrayResource> download(
+            @PathVariable Long fileId
+    ) {
+
+        byte[] data =
+                fileService.download(fileId);
+
+        ByteArrayResource resource =
+                new ByteArrayResource(data);
+
+        String contentType =
+                fileService.getContentType(fileId);
+
+        String fileName =
+                fileService.getFileName(fileId);
 
         return ResponseEntity.ok()
-                .contentType(MediaType.APPLICATION_OCTET_STREAM)
-                .body(data);
+                .contentType(
+                        MediaType.parseMediaType(
+                                contentType
+                        )
+                )
+                .header(
+                        HttpHeaders.CONTENT_DISPOSITION,
+                        "attachment; filename=\""
+                                + fileName
+                                + "\""
+                )
+                .contentLength(data.length)
+                .body(resource);
     }
 
-    @DeleteMapping("/{key}")
-    public ResponseEntity<Void> delete(
-            @PathVariable String key
+    @PatchMapping("/{fileId}/rename")
+    public ResponseEntity<FileResponse> rename(
+            @PathVariable Long fileId,
+            @RequestParam String name
     ) {
 
-        storageService.delete(key);
+        return ResponseEntity.ok(
+                fileService.rename(
+                        fileId,
+                        name
+                )
+        );
+    }
+
+    @PatchMapping("/{fileId}/move")
+    public ResponseEntity<FileResponse> move(
+            @PathVariable Long fileId,
+            @RequestParam(required = false)
+            Long folderId
+    ) {
+
+        return ResponseEntity.ok(
+                fileService.move(
+                        fileId,
+                        folderId
+                )
+        );
+    }
+
+    @DeleteMapping("/{fileId}")
+    public ResponseEntity<Void> delete(
+            @PathVariable Long fileId
+    ) {
+
+        fileService.delete(fileId);
 
         return ResponseEntity.noContent().build();
     }

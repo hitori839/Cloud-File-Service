@@ -1,31 +1,36 @@
 package com.example.backend.dto;
 
-import com.example.backend.domain.FileMetadata;
-import com.example.backend.domain.FileStatus;
+import com.example.backend.entity.FileEntity;
 
-import java.time.Instant;
+import java.time.LocalDateTime;
 
 public record FileResponse(
         Long id,
-        String fileName,
+        String name,
+        String originalName,
+        Long size,
         String contentType,
-        long size,
-        String objectKey,
-        FileStatus status,
-        Instant createdAt
+        Long folderId,
+        LocalDateTime createdAt,
+        LocalDateTime updatedAt
 ) {
 
-    public static FileResponse from(
-            FileMetadata metadata
-    ) {
+    public static FileResponse from(FileEntity file) {
+
+        Long folderId =
+                file.getFolder() == null
+                        ? null
+                        : file.getFolder().getId();
+
         return new FileResponse(
-                metadata.id(),
-                metadata.fileName(),
-                metadata.contentType(),
-                metadata.size(),
-                metadata.objectKey(),
-                metadata.status(),
-                metadata.createdAt()
+                file.getId(),
+                file.getName(),
+                file.getOriginalName(),
+                file.getSize(),
+                file.getContentType(),
+                folderId,
+                file.getCreatedAt(),
+                file.getUpdatedAt()
         );
     }
 }
