@@ -3,6 +3,20 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AWS_REGION: ${AWS_REGION:-ap-northeast-2}
+      S3_BUCKET: ${S3_BUCKET:-local-cloud-file-service}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      DB_URL: jdbc:postgresql://postgres:5432/cloud_file
+      DB_USERNAME: cloud_user
+      DB_PASSWORD: cloud_password
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/cloud_file
+      SPRING_DATASOURCE_USERNAME: cloud_user
+      SPRING_DATASOURCE_PASSWORD: cloud_password
     ports:
       - "18080:8080"
     expose:
@@ -22,6 +36,28 @@ services:
       - cloud-file-service
     networks:
       - cloud-network
+
+  postgres:
+    image: postgres:16
+    container_name: cloud-file-postgres
+    environment:
+      POSTGRES_DB: cloud_file
+      POSTGRES_USER: cloud_user
+      POSTGRES_PASSWORD: cloud_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cloud_user -d cloud_file"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - cloud-network
+
+volumes:
+  postgres_data:
 
 networks:
   cloud-network:

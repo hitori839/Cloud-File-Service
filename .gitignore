@@ -42,6 +42,6 @@ out/
 .aws/
 /aws/
 /awscliv2.zip
-/day3*.txt
-/test-s3.txt
+/keys.txt
 *.pem
+node_modules/
