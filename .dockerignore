@@ -3,15 +3,37 @@
 .idea
 .vscode
 
+# Local and generated build output
 **/build
 **/.gradle
+backend/bin
 
+# Repository and local development files
+.gitignore
+.dockerignore
+*.iml
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Documentation and deployment files not used by the Dockerfile
 README.md
 docs
 terraform
 k8s
 observability
+Accept
+GET
+Host
+User-Agent
 
+# Logs, local configuration, and credentials
 *.log
 .env
+.env.*
+keys.txt
+**/keys.txt
 *.pem
+*.key
+*.crt
