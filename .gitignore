@@ -45,3 +45,15 @@ out/
 /keys.txt
 *.pem
 node_modules/
+
+# Local test artifacts
+test.txt
+persistent.txt
+downloaded.txt
+
+# Certificates and local databases
+*.crt
+*.p12
+*.jks
+*.sqlite
+*.db

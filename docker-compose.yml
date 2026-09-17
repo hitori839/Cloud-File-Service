@@ -11,12 +11,14 @@ services:
       S3_BUCKET: ${S3_BUCKET:-local-cloud-file-service}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
-      DB_URL: jdbc:postgresql://postgres:5432/cloud_file
+      DB_URL: jdbc:postgresql://host.docker.internal:5432/cloud_file
       DB_USERNAME: cloud_user
       DB_PASSWORD: cloud_password
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/cloud_file
+      SPRING_DATASOURCE_URL: jdbc:postgresql://host.docker.internal:5432/cloud_file
       SPRING_DATASOURCE_USERNAME: cloud_user
       SPRING_DATASOURCE_PASSWORD: cloud_password
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "18080:8080"
     expose:

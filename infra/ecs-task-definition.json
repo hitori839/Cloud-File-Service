@@ -1,0 +1,52 @@
+{
+  "family": "cloud-file-service",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::358545165495:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::358545165495:role/cloud-file-service-task-role",
+  "containerDefinitions": [
+    {
+      "name": "cloud-file-service",
+      "image": "358545165495.dkr.ecr.ap-northeast-2.amazonaws.com/cloud-file-service:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8080,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {
+          "name": "AWS_REGION",
+          "value": "ap-northeast-2"
+        },
+        {
+          "name": "S3_BUCKET",
+          "value": "cloud-file-service-2026-hitori-358545165495-ap-northeast-2-an"
+        },
+        {
+          "name": "SPRING_DATASOURCE_URL",
+          "value": "jdbc:postgresql://database-1.cjcqm26686dt.ap-northeast-2.rds.amazonaws.com:5432/postgres"
+        },
+        {
+          "name": "SPRING_DATASOURCE_USERNAME",
+          "value": "postgres"
+        },
+        {
+          "name": "SPRING_DATASOURCE_PASSWORD",
+          "value": "vmflstm2490"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/cloud-file-service",
+          "awslogs-region": "ap-northeast-2",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}
