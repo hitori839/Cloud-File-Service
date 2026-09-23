@@ -1,0 +1,20 @@
+기능                 실제 경로             Method
+---------------------------------------------------
+파일 목록             /api/files             GET
+파일 업로드           /api/files             POST
+파일 다운로드         /api/files/
+                    {fileId}/download       GET
+파일 삭제             /api/files/
+                    {fileId}                DELETE
+파일 이름 변경        /api/files/
+                    {fileId}/rename         PUT/PATCH
+파일 이동             /api/files/
+                    {fileId}/move           PUT/PATCH
+폴더 목록             /api/folders             GET
+폴더 생성             /api/folders             POST
+폴더 이름 변경        /api/folders/
+                    {folderId}             PUT/PATCH
+폴더 이동             (결과 없음 - /api/folders/
+                     {folderId}와 동일 매핑 추정)             PUT/PATCH
+폴더 삭제            /api/folders/
+                    {folderId}            DELETE
