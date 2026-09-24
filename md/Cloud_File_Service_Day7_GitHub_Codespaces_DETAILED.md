@@ -40,6 +40,15 @@ GitHub
    v
 GitHub Actions
    |
+실제 값은 다음처럼 변수에 저장해 재사용한다.
+
+``` bash
+ECR_REPOSITORY_URL=$(terraform -chdir=infra/terraform output -raw ecr_repository_url)
+RDS_ENDPOINT=$(terraform -chdir=infra/terraform output -raw rds_endpoint)
+S3_BUCKET=$(terraform -chdir=infra/terraform output -raw s3_bucket_name)
+printf '%s\n' "$ECR_REPOSITORY_URL" "$RDS_ENDPOINT" "$S3_BUCKET"
+```
+
    +--> Test
    +--> Gradle Build
    +--> Docker Build
@@ -212,6 +221,42 @@ terraform output -raw rds_endpoint
 
 ------------------------------------------------------------------------
 
+## EKS를 사용할 때 반드시 확인할 사항
+
+현재 저장소의 Terraform은 VPC, RDS, S3, ECR, ECS를 만들지만 **EKS Cluster와
+EKS Node Group은 만들지 않는다**. 따라서 `kubectl`의 현재 context가 kind인
+상태에서 ECR 주소를 Deployment에 넣으면 `ImagePullBackOff`가 발생한다.
+
+EKS 경로에서는 다음 조건을 먼저 만족해야 한다.
+
+1. EKS Cluster와 Node Group이 같은 AWS Region에 존재해야 한다.
+2. EKS Node가 ECR에서 이미지를 받을 수 있도록 Node IAM Role에
+  `AmazonEC2ContainerRegistryReadOnly` 또는 동등한 권한이 있어야 한다.
+3. EKS Node가 ECR과 RDS에 접근할 수 있도록 VPC DNS, NAT Gateway 또는
+  VPC Endpoint와 보안 그룹이 구성되어야 한다.
+4. RDS 보안 그룹의 5432 인바운드 규칙이 현재 ECS 보안 그룹만 허용하므로,
+  EKS Node 보안 그룹도 PostgreSQL 5432에 허용해야 한다.
+
+EKS Cluster가 이미 있다면 kubeconfig를 전환한다.
+
+``` bash
+aws eks update-kubeconfig \
+  --region ap-northeast-2 \
+  --name <EKS_CLUSTER_NAME>
+
+kubectl config current-context
+kubectl get nodes
+```
+
+`kubectl get nodes`가 정상적으로 노드를 반환하기 전에는 Kubernetes Secret이나
+Deployment를 적용하지 않는다. kind context라면 아래 명령으로 되돌릴 수 있다.
+
+``` bash
+kubectl config use-context kind-cloud-file-service
+```
+
+------------------------------------------------------------------------
+
 # 3. Day 7에서 새로 만드는 폴더
 
 프로젝트 루트:
@@ -234,6 +279,7 @@ cloud-file-service/
 │   ├── namespace.yaml
 │   ├── configmap.yaml
 │   ├── secret.example.yaml
+│   ├── secret.yaml       # 로컬에서 생성, Git에 커밋하지 않음
 │   ├── deployment.yaml
 │   ├── service.yaml
 │   ├── ingress.yaml      # 선택
@@ -441,13 +487,15 @@ Kubernetes Cluster
 find backend/src/main/resources -maxdepth 2 -type f -print
 ```
 
-그리고:
+Terraform output이 다음과 같다고 가정하면:
 
 ``` bash
-grep -Rni \
+image: 358545165495.dkr.ecr.ap-northeast-2.amazonaws.com/cloud-file-service-dev:<IMAGE_TAG>
   "spring.datasource\|AWS_\|S3\|BUCKET\|DATABASE" \
   backend/src/main \
   2>/dev/null
+`<IMAGE_TAG>`에는 방금 push한 실제 commit tag를 넣는다. `latest`보다
+commit tag를 사용하는 편이 롤백과 원인 확인에 유리하다.
 ```
 
 **환경변수 이름을 추측하지 않는다.**
@@ -549,7 +597,7 @@ type: Opaque
 stringData:
   DB_USERNAME: "CHANGE_ME"
   DB_PASSWORD: "CHANGE_ME"
-  DB_URL: "jdbc:postgresql://CHANGE_ME:5432/cloudfiles"
+  DB_URL: "jdbc:postgresql://CHANGE_ME:5432/cloud_file"
 ```
 
 이 파일은 **예제**다.
@@ -568,6 +616,24 @@ kubectl create secret generic cloud-file-service-secret \
   --from-literal=DB_USERNAME='실제사용자명' \
   --from-literal=DB_PASSWORD='실제비밀번호' \
   --from-literal=DB_URL='실제 JDBC URL'
+```
+
+파일로 관리할 경우 `k8s/secret.example.yaml`을 복사해 `k8s/secret.yaml`을
+만들고 값을 입력한 뒤 적용한다. `secret.yaml`은 `.gitignore`에 등록한다.
+
+``` bash
+cp k8s/secret.example.yaml k8s/secret.yaml
+# k8s/secret.yaml의 DB_USERNAME, DB_PASSWORD, DB_URL 수정
+kubectl apply -f k8s/secret.yaml
+```
+
+`DB_URL`은 Kubernetes Pod에서 접근 가능한 주소여야 한다. 로컬 Compose의
+PostgreSQL은 호스트의 `localhost`가 아니므로 kind Pod에서 그대로 사용할 수
+없다. RDS를 사용한다면 다음 endpoint를 JDBC URL에 넣는다.
+
+``` bash
+terraform -chdir=infra/terraform output -raw rds_endpoint
+# jdbc:postgresql://<RDS_ENDPOINT>:5432/cloud_file
 ```
 
 확인:
@@ -628,14 +694,14 @@ implementation("org.springframework.boot:spring-boot-starter-actuator")
 backend/src/main/resources/application.properties
 ```
 
-추가:
+현재 저장소의 `application.properties`에는 다음 설정이 이미 있다.
 
 ``` properties
 management.endpoints.web.exposure.include=health,info
 management.endpoint.health.probes.enabled=true
 ```
 
-이 설정은 현재 파일에 아직 없으므로 추가해야 한다. 추가한 뒤:
+따라서 이 설정을 다시 추가하지 않는다.
 
 ``` bash
 cd backend
@@ -730,7 +796,8 @@ spec:
     spec:
       containers:
         - name: backend
-          image: YOUR_ECR_REPOSITORY:YOUR_TAG
+          image: cloud-file-service:latest
+          imagePullPolicy: IfNotPresent
 
           ports:
             - containerPort: 8080
@@ -773,18 +840,13 @@ kind는 ECR에 자동으로 로그인하지 않으므로 ECR의 사설 이미지
 빌드하므로 Codespaces에서 다음처럼 이미지를 만들고 kind에 전달한다.
 
 ``` bash
-docker build -t cloud-file-service:day7-local .
-kind load docker-image cloud-file-service:day7-local \
+docker build -t cloud-file-service:latest .
+kind load docker-image cloud-file-service:latest \
   --name cloud-file-service
 ```
 
-그 다음 `k8s/deployment.yaml`의 image를 다음처럼 바꾸고,
-`imagePullPolicy: IfNotPresent`를 추가한다.
-
-``` yaml
-image: cloud-file-service:day7-local
-imagePullPolicy: IfNotPresent
-```
+현재 `k8s/deployment.yaml`은 위의 로컬 이미지와
+`imagePullPolicy: IfNotPresent`를 사용하도록 구성되어 있다.
 
 ECR 이미지와 `github.sha` 태그는 GitHub Actions가 푸시한 뒤 EKS 또는
 ECR 접근 권한이 있는 Kubernetes에서 사용하는 흐름이다. kind에서 ECR
@@ -794,17 +856,16 @@ ECR 접근 권한이 있는 Kubernetes에서 사용하는 흐름이다. kind에�
 
 # 19. ECR 주소 확인
 
-Day 5 Terraform 폴더:
+프로젝트 루트에서 실행한다.
 
 ``` bash
-cd infra/terraform
-terraform output
+terraform -chdir=infra/terraform output
 ```
 
 가능하면:
 
 ``` bash
-terraform output -raw ecr_repository_url
+terraform -chdir=infra/terraform output -raw ecr_repository_url
 ```
 
 실제 Output 이름이 다르면:
@@ -815,19 +876,38 @@ terraform output
 
 로 찾는다.
 
-예:
+실제 값은 다음처럼 변수에 저장해 재사용한다.
 
-``` text
-123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/cloud-file-service
+``` bash
+ECR_REPOSITORY_URL=$(terraform -chdir=infra/terraform output -raw ecr_repository_url)
+RDS_ENDPOINT=$(terraform -chdir=infra/terraform output -raw rds_endpoint)
+S3_BUCKET=$(terraform -chdir=infra/terraform output -raw s3_bucket_name)
+printf '%s\n' "$ECR_REPOSITORY_URL" "$RDS_ENDPOINT" "$S3_BUCKET"
 ```
 
-그러면:
+ECR 로그인과 이미지 push:
+
+``` bash
+AWS_REGION=ap-northeast-2
+IMAGE_TAG=$(git rev-parse --short HEAD)
+
+aws ecr get-login-password --region "$AWS_REGION" | \
+  docker login --username AWS --password-stdin \
+  "$(printf '%s' "$ECR_REPOSITORY_URL" | cut -d/ -f1)"
+
+docker build -t "$ECR_REPOSITORY_URL:$IMAGE_TAG" .
+docker push "$ECR_REPOSITORY_URL:$IMAGE_TAG"
+```
+
+push한 뒤 `k8s/deployment.yaml`의 `image`를 다음처럼 설정한다.
 
 ``` yaml
-image: 123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/cloud-file-service:day7
+image: 358545165495.dkr.ecr.ap-northeast-2.amazonaws.com/cloud-file-service-dev:<IMAGE_TAG>
+imagePullPolicy: IfNotPresent
 ```
 
-처럼 작성한다.
+`<IMAGE_TAG>`에는 방금 push한 실제 commit tag를 넣는다. `latest`보다
+commit tag를 사용하는 편이 롤백과 원인 확인에 유리하다.
 
 ------------------------------------------------------------------------
 
@@ -855,8 +935,18 @@ find . -maxdepth 3 -name Dockerfile -print
 # 21. Deployment 적용
 
 ``` bash
+kubectl apply -f k8s/namespace.yaml
+kubectl apply -f k8s/configmap.yaml
+kubectl apply -f k8s/secret.yaml
 kubectl apply -f k8s/deployment.yaml
+kubectl rollout status deployment/cloud-file-service \
+  -n cloud-file-service \
+  --timeout=180s
 ```
+
+EKS에서는 `k8s/secret.yaml`의 `DB_URL`을 RDS endpoint로 설정하고,
+`k8s/configmap.yaml`의 `S3_BUCKET`을 Terraform output의
+`s3_bucket_name`으로 설정한다. `secret.yaml`은 Git에 커밋하지 않는다.
 
 확인:
 
@@ -900,6 +990,12 @@ ImagePullBackOff
 Pending
 0/1
 ```
+
+`ImagePullBackOff`이면 먼저 현재 context가 EKS인지 확인하고, EKS Node의
+ECR 읽기 권한과 이미지 tag를 확인한다. `CrashLoopBackOff`이면 Pod 로그에서
+RDS endpoint DNS 해석, RDS 보안 그룹 5432 허용, DB 사용자명/비밀번호를
+순서대로 확인한다. `Running`이어도 `READY`가 `1/1`이 아니면 정상 배포가
+아니다.
 
 ------------------------------------------------------------------------
 
@@ -1382,14 +1478,14 @@ kubectl set image \
   -n cloud-file-service
 ```
 
-예:
-
 ``` bash
 kubectl set image \
   deployment/cloud-file-service \
-  backend=123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/cloud-file-service:9d4e1c \
+  backend="$ECR_REPOSITORY_URL:$IMAGE_TAG" \
   -n cloud-file-service
 ```
+
+`ECR_REPOSITORY_URL`과 `IMAGE_TAG`는 Section 19에서 설정한 값을 사용한다.
 
 확인:
 
