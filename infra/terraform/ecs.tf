@@ -49,6 +49,10 @@ resource "aws_ecs_task_definition" "backend" {
         {
           name  = "DB_USERNAME"
           value = var.db_username
+        },
+        {
+          name  = "ADMIN_EMAILS"
+          value = var.admin_emails
         }
       ]
 
@@ -56,6 +60,10 @@ resource "aws_ecs_task_definition" "backend" {
         {
           name      = "DB_PASSWORD"
           valueFrom = aws_secretsmanager_secret.db_password.arn
+        },
+        {
+          name      = "JWT_SECRET"
+          valueFrom = aws_secretsmanager_secret.jwt_secret.arn
         }
       ]
 

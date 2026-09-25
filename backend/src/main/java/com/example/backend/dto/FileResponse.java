@@ -11,8 +11,11 @@ public record FileResponse(
         Long size,
         String contentType,
         Long folderId,
+        boolean starred,
+        boolean trashed,
         LocalDateTime createdAt,
-        LocalDateTime updatedAt
+        LocalDateTime updatedAt,
+        LocalDateTime trashedAt
 ) {
 
     public static FileResponse from(FileEntity file) {
@@ -29,8 +32,11 @@ public record FileResponse(
                 file.getSize(),
                 file.getContentType(),
                 folderId,
+                file.isStarred(),
+                file.isTrashed(),
                 file.getCreatedAt(),
-                file.getUpdatedAt()
+                file.getUpdatedAt(),
+                file.getTrashedAt()
         );
     }
 }

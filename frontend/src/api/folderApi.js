@@ -1,47 +1,45 @@
-import { request } from "./client";
+import { buildQuery, request } from "./client";
 
-export function getFolders(parentFolderId) {
-  const query = new URLSearchParams();
-
-  if (
-    parentFolderId !== null &&
-    parentFolderId !== undefined
-  ) {
-    query.set("parentFolderId", parentFolderId);
-  }
-
-  const suffix = query.toString()
-    ? `?${query.toString()}`
-    : "";
-
-  return request(`/api/folders${suffix}`);
+export function listFolders(parentFolderId = null) {
+  return request(`/api/folders${buildQuery({ parentFolderId })}`);
 }
 
-export function createFolder(name, parentId) {
+export function getFolder(id) {
+  return request(`/api/folders/${id}`);
+}
+
+export function getFolderPath(id) {
+  return request(`/api/folders/${id}/path`);
+}
+
+export function getFolderTree() {
+  return request("/api/folders/tree");
+}
+
+export function createFolder(name, parentFolderId = null) {
   return request("/api/folders", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      name,
-      parentFolderId: parentId,
-    }),
+    json: { name, parentFolderId },
   });
 }
 
 export function renameFolder(id, name) {
-  return request(`/api/folders/${id}`, {
+  return request(`/api/folders/${id}`, { method: "PATCH", json: { name } });
+}
+
+export function moveFolder(id, parentFolderId = null) {
+  return request(`/api/folders/${id}/move${buildQuery({ parentFolderId })}`, {
     method: "PATCH",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ name }),
   });
 }
 
-export function deleteFolder(id) {
-  return request(`/api/folders/${id}`, {
-    method: "DELETE",
+export function starFolder(id, starred) {
+  return request(`/api/folders/${id}/star${buildQuery({ starred })}`, {
+    method: "PATCH",
   });
+}
+
+/** 휴지통으로 이동 (하위 항목 포함) */
+export function trashFolder(id) {
+  return request(`/api/folders/${id}`, { method: "DELETE" });
 }

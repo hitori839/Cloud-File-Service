@@ -1,264 +1,73 @@
-import {
-  useEffect,
-  useState,
-} from "react";
-
-import Header from "./components/Header";
-import Sidebar from "./components/Sidebar";
-import Breadcrumb from "./components/Breadcrumb";
-import Toolbar from "./components/Toolbar";
-import FileRow from "./components/FileRow";
-import FolderRow from "./components/FolderRow";
-import Loading from "./components/Loading";
-import ErrorMessage from "./components/ErrorMessage";
-import CreateFolderModal from "./components/CreateFolderModal";
-import RenameModal from "./components/RenameModal";
-import MoveModal from "./components/MoveModal";
-
-import useDrive from "./hooks/useDrive";
-
+import { useEffect } from "react";
+import AppShell from "./components/AppShell";
+import AuthProvider from "./components/AuthProvider";
+import DialogProvider from "./components/DialogProvider";
+import EmptyState from "./components/EmptyState";
+import Logo from "./components/Logo";
+import Spinner from "./components/Spinner";
+import ToastProvider from "./components/ToastProvider";
+import useAuth from "./hooks/useAuth";
+import useHashRoute, { navigate } from "./hooks/useHashRoute";
+import LoginPage from "./pages/LoginPage";
+import SignupPage from "./pages/SignupPage";
+import { errorMessage } from "./utils/format";
 import "./App.css";
 
-function App() {
-  const {
-    files,
-    folders,
-    loading,
-    uploading,
-    error,
-    load,
-    handleUpload,
-    handleDownload,
-    handleCreateFolder,
-    handleRenameFile,
-    handleRenameFolder,
-    handleMoveFile,
-    handleDeleteFile,
-    handleDeleteFolder,
-  } = useDrive();
+function Root() {
+  const auth = useAuth();
+  const route = useHashRoute();
+  const authed = auth.status === "authenticated";
+  const onAuthRoute = route.name === "login" || route.name === "signup";
 
-  const [
-    currentFolderId,
-    setCurrentFolderId,
-  ] = useState(null);
-
-  const [folderPath, setFolderPath] =
-    useState([]);
-
-  const [section, setSection] =
-    useState("drive");
-
-  const [
-    folderModalOpen,
-    setFolderModalOpen,
-  ] = useState(false);
-
-  const [renameTarget, setRenameTarget] =
-    useState(null);
-
-  const [moveTarget, setMoveTarget] =
-    useState(null);
-
+  // 로그인 상태에서 로그인/회원가입 주소면 드라이브로
   useEffect(() => {
-    load(currentFolderId);
-  }, [currentFolderId, load]);
+    if (authed && onAuthRoute) navigate("/drive", { replace: true });
+  }, [authed, onAuthRoute]);
 
-  async function createFolder(name) {
-    await handleCreateFolder(
-      name,
-      currentFolderId
-    );
-
-    setFolderModalOpen(false);
-  }
-
-  async function renameItem(item, name) {
-    if (renameTarget.type === "file") {
-      await handleRenameFile(
-        item.id,
-        name,
-        currentFolderId
-      );
-    } else {
-      await handleRenameFolder(
-        item.id,
-        name,
-        currentFolderId
-      );
-    }
-
-    setRenameTarget(null);
-  }
-
-  async function moveItem(folder) {
-    await handleMoveFile(
-      moveTarget.id,
-      folder ? folder.id : null,
-      currentFolderId
-    );
-
-    setMoveTarget(null);
-  }
-
-  function openFolder(folder) {
-    setCurrentFolderId(folder.id);
-
-    setFolderPath((current) => [
-      ...current,
-      folder,
-    ]);
-  }
-
-  function goToFolder(folderId) {
-    if (folderId === null) {
-      setCurrentFolderId(null);
-      setFolderPath([]);
-      return;
-    }
-
-    const index =
-      folderPath.findIndex(
-        (folder) =>
-          folder.id === folderId
-      );
-
-    if (index === -1) {
-      return;
-    }
-
-    setCurrentFolderId(folderId);
-
-    setFolderPath(
-      folderPath.slice(0, index + 1)
-    );
-  }
-
-  return (
-    <div className="app">
-      <Header
-        onRefresh={() =>
-          load(currentFolderId)
-        }
-      />
-
-      <div className="layout">
-        <Sidebar
-          currentSection={section}
-          onSectionChange={setSection}
-        />
-
-        <main className="content">
-          <Breadcrumb
-            folders={folderPath}
-            onFolderClick={goToFolder}
-          />
-
-          <Toolbar
-            onCreateFolder={() =>
-              setFolderModalOpen(true)
-            }
-            onUpload={(file) =>
-              handleUpload(
-                file,
-                currentFolderId
-              )
-            }
-            uploading={uploading}
-          />
-
-          <ErrorMessage
-            message={error}
-          />
-
-          {loading ? (
-            <Loading />
-          ) : (
-            <div className="file-table">
-              <div className="file-header file-row">
-                <div>이름</div>
-                <div>종류</div>
-                <div>크기</div>
-                <div>수정일</div>
-                <div>작업</div>
-              </div>
-
-              {folders.map((folder) => (
-                <FolderRow
-                  key={`folder-${folder.id}`}
-                  folder={folder}
-                  onOpen={openFolder}
-                  onRename={(item) =>
-                    setRenameTarget({
-                      type: "folder",
-                      item,
-                    })
-                  }
-                  onDelete={(item) =>
-                    handleDeleteFolder(
-                      item,
-                      currentFolderId
-                    )
-                  }
-                />
-              ))}
-
-              {files.map((file) => (
-                <FileRow
-                  key={`file-${file.id}`}
-                  file={file}
-                  onDownload={handleDownload}
-                  onRename={(item) =>
-                    setRenameTarget({
-                      type: "file",
-                      item,
-                    })
-                  }
-                  onMove={setMoveTarget}
-                  onDelete={(item) =>
-                    handleDeleteFile(
-                      item,
-                      currentFolderId
-                    )
-                  }
-                />
-              ))}
-
-              {folders.length === 0 &&
-                files.length === 0 && (
-                  <div className="empty-state">
-                    이 폴더는 비어 있습니다.
-                  </div>
-                )}
-            </div>
-          )}
-        </main>
+  if (auth.status === "loading") {
+    return (
+      <div className="splash">
+        <Logo size={48} />
+        <Spinner size={28} label="세션 확인 중" />
       </div>
+    );
+  }
 
-      <CreateFolderModal
-        open={folderModalOpen}
-        onClose={() =>
-          setFolderModalOpen(false)
-        }
-        onCreate={createFolder}
-      />
+  if (auth.status === "error") {
+    return (
+      <div className="splash">
+        <EmptyState
+          variant="error"
+          title="서버에 연결할 수 없습니다"
+          description={errorMessage(auth.error, "잠시 후 다시 시도해 주세요.")}
+        >
+          <button type="button" className="btn btn-primary" onClick={auth.retry}>
+            다시 시도
+          </button>
+          <button type="button" className="btn btn-ghost" onClick={auth.logout}>
+            로그인 화면으로
+          </button>
+        </EmptyState>
+      </div>
+    );
+  }
 
-      <RenameModal
-        key={renameTarget
-          ? `${renameTarget.type}-${renameTarget.item.id}`
-          : "rename-modal"}
-        open={Boolean(renameTarget)}
-        item={renameTarget?.item}
-        onClose={() => setRenameTarget(null)}
-        onRename={renameItem}
-      />
+  if (!authed) {
+    return route.name === "signup" ? <SignupPage /> : <LoginPage />;
+  }
 
-      <MoveModal
-        open={Boolean(moveTarget)}
-        folders={folders}
-        onClose={() => setMoveTarget(null)}
-        onMove={moveItem}
-      />
-    </div>
+  return <AppShell route={route} />;
+}
+
+function App() {
+  return (
+    <ToastProvider>
+      <DialogProvider>
+        <AuthProvider>
+          <Root />
+        </AuthProvider>
+      </DialogProvider>
+    </ToastProvider>
   );
 }
 

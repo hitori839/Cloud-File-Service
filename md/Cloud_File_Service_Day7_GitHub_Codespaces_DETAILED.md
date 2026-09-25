@@ -149,6 +149,43 @@ kubectl get nodes
 Codespaces에서 Docker 자체가 실행되지 않았다면 먼저 Docker 기능을 복구하고
 `docker info`가 성공한 뒤 진행한다.
 
+**Codespace를 켤 때마다 다음 3가지를 실행한다.** (재시작하면 초기화된다)
+
+``` bash
+# ① kind Pod의 외부 통신 허용 (6-1번, 재시작 시 초기화됨)
+sudo iptables-legacy -C FORWARD -i br-+ -j ACCEPT 2>/dev/null \
+  || sudo iptables-legacy -I FORWARD 1 -i br-+ -j ACCEPT
+sudo iptables-legacy -C FORWARD -o br-+ -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null \
+  || sudo iptables-legacy -I FORWARD 2 -o br-+ -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+
+# ② 로컬 PostgreSQL
+docker compose up -d postgres
+
+# ③ Frontend가 kind Backend(port-forward 8080)를 보도록 확인
+cat frontend/.env.local   # VITE_API_TARGET=http://localhost:8080 이어야 한다
+
+# ④ 디스크 여유 공간 확인 (Avail이 3GB 미만이면 아래 정리를 먼저 한다)
+df -h /
+```
+
+Codespace 디스크(32GB)는 Docker 이미지가 쌓이면 금방 찬다. 이미지 하나가 약
+600MB이고 build할 때마다 새로 생긴다. 공간이 부족하면 build·테스트가
+`No space left on device`로 실패하므로 미리 정리한다.
+
+``` bash
+docker system df                       # 무엇이 공간을 쓰는지
+docker images                          # 쓰지 않는 옛 태그 확인
+docker rmi <쓰지 않는 이미지:태그>        # 예: cloud-file-service:day2
+docker builder prune -af               # 빌드 캐시 삭제 (다음 build가 조금 느려질 뿐)
+docker exec cloud-file-service-control-plane crictl rmi --prune   # kind 노드 안 미사용 이미지
+npm cache clean --force
+```
+
+> 지우면 안 되는 것: 지금 Deployment가 쓰는 이미지(`cloud-file-service:latest`,
+> 최근 태그), `postgres:16`, `kindest/node`, Docker 볼륨(`docker volume ls`의
+> PostgreSQL 데이터). `docker system prune --volumes`는 DB 데이터까지 지우므로
+> 사용하지 않는다.
+
 프로젝트 루트:
 
 ``` bash
@@ -252,7 +289,8 @@ EKS (선택)
   - Manifest: k8s/serviceaccount.yaml + k8s/deployment-eks.yaml
 ```
 
-EKS는 Day 5 Terraform에 `infra/terraform/eks.tf`를 추가해서 만든다. 전체
+EKS는 Day 5 Terraform의 `infra/terraform/eks.tf`로 만든다. `enable_eks` 변수
+(기본값 `false`)를 `true`로 켤 때만 생성되고, `false`로 되돌리면 삭제된다. 전체
 절차는 [48-1. 선택: EKS에 배포하기](#48-1-선택-eks에-배포하기)에 있다.
 **kind 경로를 끝까지 성공한 뒤에** 진행한다.
 
@@ -285,7 +323,8 @@ cloud-file-service/
 ├── frontend/
 ├── infra/
 │   └── terraform/
-│       └── eks.tf            # 선택: EKS용
+│       ├── variables.tf      # enable_eks 변수 (기본 false)
+│       └── eks.tf            # 선택: EKS용 (enable_eks = true일 때만 생성)
 ├── k8s/
 │   ├── namespace.yaml
 │   ├── configmap.yaml
@@ -437,6 +476,51 @@ kubectl get nodes
 ``` bash
 kind delete cluster --name cloud-file-service
 ```
+
+## 6-1. Codespaces에서 kind Pod의 외부 통신 열기 (필수)
+
+GitHub Codespaces에는 방화벽 규칙 테이블이 두 벌(`iptables`(nft)와
+`iptables-legacy`) 동시에 적용된다. `iptables-legacy`의 FORWARD 기본 정책이
+`DROP`이고 허용 규칙이 `docker0`에만 있어서, kind 네트워크(`br-...`)를 지나는
+트래픽이 버려진다. 그대로 두면 다음 증상이 난다.
+
+``` text
+- Pod → S3 연결 실패 → 업로드 시
+  {"message":"Content input stream does not support mark/reset, and was already read once."}
+  (네트워크 실패 후 AWS SDK가 재시도하다 나는 2차 오류)
+- Pod → 외부 DNS/인터넷 실패
+- kind 노드 → 다른 컨테이너 IP(172.x.0.3 등) Connect timed out
+```
+
+먼저 상태를 확인한다.
+
+``` bash
+sudo iptables-legacy -S FORWARD | head -3
+# -P FORWARD DROP 이면 아래 명령이 필요하다
+```
+
+Docker 브리지(`br-*`) 트래픽을 허용한다. `-C`로 이미 있는지 확인한 뒤 없을 때만
+추가하므로 여러 번 실행해도 안전하다.
+
+``` bash
+sudo iptables-legacy -C FORWARD -i br-+ -j ACCEPT 2>/dev/null \
+  || sudo iptables-legacy -I FORWARD 1 -i br-+ -j ACCEPT
+sudo iptables-legacy -C FORWARD -o br-+ -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null \
+  || sudo iptables-legacy -I FORWARD 2 -o br-+ -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+```
+
+확인 (kind 노드에서 S3로 연결):
+
+``` bash
+docker exec cloud-file-service-control-plane bash -c \
+  '(timeout 5 bash -c "</dev/tcp/s3.ap-northeast-2.amazonaws.com/443" && echo s3-ok) || echo s3-fail'
+```
+
+`s3-ok`가 나와야 한다.
+
+> 이 설정은 Codespace 안의 Docker 브리지 간 전달만 허용하며, 외부에서 들어오는
+> 접속을 여는 것이 아니다. **Codespace를 재시작하면 사라지므로** 1번의
+> "Codespace를 켤 때마다" 절차에서 다시 실행한다.
 
 ------------------------------------------------------------------------
 
@@ -1298,12 +1382,19 @@ Service
 > 둘 다 8080 포트를 사용한다. port-forward는 실행된 터미널을 계속 점유하므로
 > 이 터미널은 그대로 두고 다른 터미널에서 테스트한다.
 
+Pod가 교체되면(38·41·44·45번) port-forward가 끊기므로, 끊기면 자동으로 다시
+연결되도록 반복문으로 실행한다.
+
 ``` bash
-kubectl port-forward \
-  -n cloud-file-service \
-  service/cloud-file-service \
-  8080:8080
+while true; do
+  kubectl port-forward -n cloud-file-service service/cloud-file-service 8080:8080
+  echo "port-forward 끊김 → 2초 후 재연결"
+  sleep 2
+done
 ```
+
+`Forwarding from 127.0.0.1:8080 -> 8080`이 보이면 연결된 것이다. 종료는
+`Ctrl+C`를 두 번 누른다.
 
 다른 터미널:
 
@@ -1321,13 +1412,20 @@ curl -i http://localhost:8080/actuator/health
 정상이다.
 
 port-forward가 8080으로 열려 있으면 Day 6 Frontend(`npm run dev`)는 bootRun
-때와 같은 `localhost:8080` 주소로 kind의 Backend를 사용한다. 이 상태에서
+때와 같은 `localhost:8080` 주소로 kind의 Backend를 사용한다. 단,
+`frontend/.env.local`의 `VITE_API_TARGET`이 **`http://localhost:8080`**이어야
+한다. Day 4~6에서 ECS 공인 IP로 바꿔 두었다면 되돌리고 `npm run dev`를
+재시작한다(Vite는 시작할 때만 `.env.local`을 읽는다).
+
+Frontend 화면의 `HTTP 502`나 Vite 터미널의
+`http proxy error ... ECONNREFUSED` / `socket hang up`은 **port-forward가 꺼져
+있다는 뜻**이다. 위 반복문이 실행 중인지 확인한다. 이 상태에서
 Frontend로 폴더 생성/업로드/다운로드를 확인할 수 있다.
 
 > `kubectl port-forward service/...`는 실제로는 Service 뒤의 **Pod 하나**에
 > 연결된다. 그 Pod가 삭제·교체되면(44·45·38번 실습) port-forward가
-> `lost connection to pod` 등으로 끊긴다. 그때는 `Ctrl+C` 후 같은 명령을 다시
-> 실행한다.
+> `lost connection to pod` 등으로 끊긴다. 위 반복문을 쓰면 2초 뒤 새 Pod로 자동
+> 재연결된다.
 
 ------------------------------------------------------------------------
 
@@ -1643,6 +1741,21 @@ AWS_SECRET_ACCESS_KEY
 있어야 한다. Secret을 등록하지 않고 `backend-deploy.yml`을 push하면
 `Configure AWS credentials` 단계에서 실패한다.
 
+값은 Codespace 터미널에서 확인해 그대로 복사한다.
+
+``` bash
+aws configure get aws_access_key_id       # AKIA로 시작, 20자
+aws configure get aws_secret_access_key   # 40자
+```
+
+- Name은 대소문자·밑줄까지 정확히 `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`.
+- 값 앞뒤에 공백·줄바꿈이 들어가지 않게 한다. 두 값을 서로 바꿔 넣지 않는다.
+- `The security token included in the request is invalid` 오류가 나면 값이
+  잘못 들어간 것이다. Secret 옆 ✏️(Update)로 다시 입력하고, Actions에서 실패한
+  실행을 **Re-run jobs** 한다.
+- Actions 목록에서 실행 옆 아이콘이 ✅인지 ❌인지 반드시 확인한다. 걸린 시간만
+  보고 성공으로 판단하지 않는다.
+
 Workflow 코드에 직접:
 
 ``` yaml
@@ -1757,6 +1870,11 @@ kubectl set image \
 > `kubectl rollout undo`로 되돌린다.
 
 ## EKS (48-1을 진행한 경우)
+
+> **48-1을 진행하지 않았다면 이 절은 건너뛴다.** 아래 명령은
+> `kubectl config current-context`가 `...:cluster/cloud-file-service-dev`일 때만
+> 실행한다. kind(`kind-cloud-file-service`)에서 실행하면 `ImagePullBackOff`가
+> 되고, 41번 `kubectl rollout undo`로 되돌려야 한다.
 
 EKS는 ECR 이미지를 받을 수 있으므로 19번 또는 GitHub Actions가 push한
 commit tag를 지정한다.
@@ -1921,6 +2039,20 @@ kubectl get pods \
 ------------------------------------------------------------------------
 
 # 45. Pod 교체 후 파일 유지 테스트
+
+**준비 (Backend `bootRun`은 켜지 않는다. Backend는 kind의 Pod다.)**
+
+``` text
+브라우저 → Frontend(5173) → Vite Proxy → localhost:8080 → port-forward → Service → Pod
+```
+
+1. 6-1 `iptables-legacy` 허용 규칙 적용 (Codespace 재시작 후 필수)
+2. `kubectl get pods -n cloud-file-service` → 모두 `1/1 Running`
+   (`ImagePullBackOff`가 있으면 41번 `rollout undo`)
+3. 터미널 1: 27번의 **자동 재연결 port-forward 반복문**
+4. `frontend/.env.local`의 `VITE_API_TARGET=http://localhost:8080` 확인
+5. 터미널 2: `cd frontend && npm run dev -- --host 0.0.0.0`
+6. Ports 탭에서 5173 열기
 
 먼저 Frontend에서 파일 업로드:
 
@@ -2125,7 +2257,7 @@ EKS에 올려볼 수 있다.
 ### 48-1-0. 무엇을 만드는가
 
 ``` text
-Terraform (infra/terraform/eks.tf)
+Terraform (infra/terraform/eks.tf, enable_eks = true일 때만 생성)
   ├── EKS Cluster: cloud-file-service-dev
   ├── Cluster IAM Role  (AmazonEKSClusterPolicy)
   ├── Node IAM Role     (WorkerNode + CNI + ECR ReadOnly)
@@ -2136,7 +2268,7 @@ Terraform (infra/terraform/eks.tf)
         namespace=cloud-file-service, serviceaccount=cloud-file-service
 
 security_groups.tf
-  └── RDS SG: 5432 ← EKS Cluster Security Group 허용
+  └── RDS SG: 5432 ← EKS Cluster Security Group 허용 (dynamic ingress, enable_eks = true일 때만)
 
 Kubernetes
   ├── k8s/serviceaccount.yaml   (Pod Identity가 연결될 ServiceAccount)
@@ -2182,15 +2314,37 @@ aws ecr describe-images \
 > **같아야** 한다. `bootstrap_cluster_creator_admin_permissions = true`는 클러스터를
 > 만든 사용자에게만 관리자 권한을 준다.
 
-### 48-1-2. `infra/terraform/eks.tf` 작성
+### 48-1-2. `enable_eks` 변수와 `infra/terraform/eks.tf`
 
 > 이미 저장소에 있으면 내용만 비교하고 넘어간다.
+
+EKS는 비용이 크므로 **기본으로 만들지 않는다.** `infra/terraform/variables.tf`의
+`enable_eks` 변수(기본값 `false`)로 켜고 끈다. `eks.tf`의 모든 `resource`에는
+`count = var.enable_eks ? 1 : 0`(Node 정책 연결은 `for_each`)가 붙어 있어서,
+`enable_eks = false`인 동안에는 `terraform apply`를 해도 EKS 리소스가 하나도
+만들어지지 않는다. 그래서 ECS만 수정하는 apply(`-target` 포함)에 EKS 생성이
+끌려 들어가지 않고, EKS를 지울 때 파일을 손으로 고칠 필요도 없다.
+
+`infra/terraform/variables.tf` 끝:
+
+``` hcl
+variable "enable_eks" {
+  type        = bool
+  description = "true이면 EKS Cluster/Node Group을 만든다 (Day 7 48-1, 비용 발생)."
+  default     = false
+}
+```
 
 `local.name_prefix`(= `cloud-file-service-dev`), `local.common_tags`,
 `aws_subnet.public`, `aws_subnet.private`, `data.aws_iam_policy_document.task_s3`는
 Day 5에서 만든 `locals.tf`, `vpc.tf`, `iam.tf`에 이미 있다.
 
+`infra/terraform/eks.tf`:
+
 ``` hcl
+# EKS는 비용이 크므로 기본으로 만들지 않는다.
+# terraform.tfvars에 enable_eks = true 를 넣고 apply하면 생성되고, false로 되돌리고 apply하면 삭제된다.
+
 # ---------- Cluster IAM ----------
 data "aws_iam_policy_document" "eks_cluster_assume" {
   statement {
@@ -2203,20 +2357,26 @@ data "aws_iam_policy_document" "eks_cluster_assume" {
 }
 
 resource "aws_iam_role" "eks_cluster" {
+  count = var.enable_eks ? 1 : 0
+
   name               = "${local.name_prefix}-eks-cluster-role"
   assume_role_policy = data.aws_iam_policy_document.eks_cluster_assume.json
   tags               = local.common_tags
 }
 
 resource "aws_iam_role_policy_attachment" "eks_cluster" {
-  role       = aws_iam_role.eks_cluster.name
+  count = var.enable_eks ? 1 : 0
+
+  role       = aws_iam_role.eks_cluster[0].name
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
 }
 
 # ---------- Cluster ----------
 resource "aws_eks_cluster" "main" {
+  count = var.enable_eks ? 1 : 0
+
   name     = local.name_prefix
-  role_arn = aws_iam_role.eks_cluster.arn
+  role_arn = aws_iam_role.eks_cluster[0].arn
 
   access_config {
     authentication_mode                         = "API"
@@ -2245,26 +2405,30 @@ data "aws_iam_policy_document" "eks_node_assume" {
 }
 
 resource "aws_iam_role" "eks_node" {
+  count = var.enable_eks ? 1 : 0
+
   name               = "${local.name_prefix}-eks-node-role"
   assume_role_policy = data.aws_iam_policy_document.eks_node_assume.json
   tags               = local.common_tags
 }
 
 resource "aws_iam_role_policy_attachment" "eks_node" {
-  for_each = toset([
+  for_each = var.enable_eks ? toset([
     "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy",
     "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy",
     "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly",
-  ])
-  role       = aws_iam_role.eks_node.name
+  ]) : toset([])
+  role       = aws_iam_role.eks_node[0].name
   policy_arn = each.value
 }
 
 # ---------- Node Group (public subnet → NAT 없이 ECR 접근) ----------
 resource "aws_eks_node_group" "main" {
-  cluster_name    = aws_eks_cluster.main.name
+  count = var.enable_eks ? 1 : 0
+
+  cluster_name    = aws_eks_cluster.main[0].name
   node_group_name = "${local.name_prefix}-ng"
-  node_role_arn   = aws_iam_role.eks_node.arn
+  node_role_arn   = aws_iam_role.eks_node[0].arn
   subnet_ids      = aws_subnet.public[*].id
 
   instance_types = ["t3.medium"]
@@ -2281,7 +2445,9 @@ resource "aws_eks_node_group" "main" {
 
 # ---------- Pod → S3 권한 (EKS Pod Identity) ----------
 resource "aws_eks_addon" "pod_identity" {
-  cluster_name = aws_eks_cluster.main.name
+  count = var.enable_eks ? 1 : 0
+
+  cluster_name = aws_eks_cluster.main[0].name
   addon_name   = "eks-pod-identity-agent"
 }
 
@@ -2296,24 +2462,34 @@ data "aws_iam_policy_document" "eks_pod_assume" {
 }
 
 resource "aws_iam_role" "eks_pod" {
+  count = var.enable_eks ? 1 : 0
+
   name               = "${local.name_prefix}-eks-pod-role"
   assume_role_policy = data.aws_iam_policy_document.eks_pod_assume.json
   tags               = local.common_tags
 }
 
 resource "aws_iam_role_policy" "eks_pod_s3" {
+  count = var.enable_eks ? 1 : 0
+
   name   = "${local.name_prefix}-eks-pod-s3"
-  role   = aws_iam_role.eks_pod.id
+  role   = aws_iam_role.eks_pod[0].id
   policy = data.aws_iam_policy_document.task_s3.json # iam.tf의 기존 S3 정책 재사용
 }
 
 resource "aws_eks_pod_identity_association" "backend" {
-  cluster_name    = aws_eks_cluster.main.name
+  count = var.enable_eks ? 1 : 0
+
+  cluster_name    = aws_eks_cluster.main[0].name
   namespace       = "cloud-file-service"
   service_account = "cloud-file-service"
-  role_arn        = aws_iam_role.eks_pod.arn
+  role_arn        = aws_iam_role.eks_pod[0].arn
 }
 ```
+
+`count`를 사용한 리소스는 목록이 되므로 다른 곳에서 참조할 때
+`aws_eks_cluster.main[0].name`처럼 `[0]`을 붙인다. `data` 블록(IAM 정책 문서)은
+AWS에 아무것도 만들지 않으므로 `count`가 없다.
 
 각 블록의 의미:
 
@@ -2323,17 +2499,20 @@ access_config                     → IAM 사용자 ↔ kubectl 권한 연결 �
 aws_eks_node_group.main           → Pod가 실제로 실행될 EC2 2대
 aws_eks_addon.pod_identity        → Pod에 IAM 자격 증명을 전달하는 에이전트
 aws_eks_pod_identity_association  → "이 namespace/serviceaccount의 Pod = 이 IAM Role"
+count = var.enable_eks ? 1 : 0    → enable_eks가 false면 0개(생성 안 함 / 있으면 삭제)
 ```
 
 > `namespace = "cloud-file-service"`와 `service_account = "cloud-file-service"`는
 > 7번의 Namespace, 48-1-6의 ServiceAccount 이름과 **정확히 같아야** 한다.
 
-### 48-1-3. RDS 보안 그룹과 Output 수정
+### 48-1-3. RDS 보안 그룹과 Output (enable_eks 조건부)
 
 > 이미 저장소에 있으면 내용만 비교하고 넘어간다.
 
-`infra/terraform/security_groups.tf`의 `aws_security_group.rds`에 두 번째
-`ingress` 블록을 추가한다. (기존 ECS용 ingress는 그대로 둔다.)
+`infra/terraform/security_groups.tf`의 `aws_security_group.rds`에는 EKS용
+ingress가 **`dynamic "ingress"` 블록**으로 들어 있다. `enable_eks = true`일 때만
+블록이 1개 생기고, `false`면 0개가 되어 RDS SG가 EKS Cluster를 참조하지 않는다.
+(기존 ECS용 ingress는 그대로 둔다.)
 
 ``` hcl
 resource "aws_security_group" "rds" {
@@ -2349,13 +2528,16 @@ resource "aws_security_group" "rds" {
     security_groups = [aws_security_group.ecs.id]
   }
 
-  # ↓ Day 7 EKS용으로 추가
-  ingress {
-    description     = "PostgreSQL from EKS nodes"
-    from_port       = 5432
-    to_port         = 5432
-    protocol        = "tcp"
-    security_groups = [aws_eks_cluster.main.vpc_config[0].cluster_security_group_id]
+  dynamic "ingress" {
+    for_each = var.enable_eks ? [1] : []
+
+    content {
+      description     = "PostgreSQL from EKS nodes"
+      from_port       = 5432
+      to_port         = 5432
+      protocol        = "tcp"
+      security_groups = [aws_eks_cluster.main[0].vpc_config[0].cluster_security_group_id]
+    }
   }
 
   egress {
@@ -2374,40 +2556,57 @@ resource "aws_security_group" "rds" {
 }
 ```
 
-`infra/terraform/output.tf` 끝에 추가:
+`infra/terraform/output.tf` 끝 (EKS가 꺼져 있으면 `null`):
 
 ``` hcl
 output "eks_cluster_name" {
-  value = aws_eks_cluster.main.name
+  value = var.enable_eks ? aws_eks_cluster.main[0].name : null
 }
 
 output "eks_cluster_security_group_id" {
-  value = aws_eks_cluster.main.vpc_config[0].cluster_security_group_id
+  value = var.enable_eks ? aws_eks_cluster.main[0].vpc_config[0].cluster_security_group_id : null
 }
 ```
 
-### 48-1-4. Terraform plan / apply
+### 48-1-4. `enable_eks = true`로 plan / apply
 
 새 provider를 추가하지 않았으므로 `terraform init`을 다시 할 필요는 없다.
-(해도 문제는 없다.) `db_password`는 Day 5와 같은 방식(`terraform.tfvars`)으로
-전달된다.
+(해도 문제는 없다.)
+
+`infra/terraform/terraform.tfvars`(Day 5에서 만든 파일, `.gitignore` 대상)에
+한 줄을 추가한다. `db_password`도 Day 5와 같은 방식으로 이 파일에서 전달된다.
+
+``` hcl
+enable_eks = true
+```
 
 ``` bash
+grep enable_eks infra/terraform/terraform.tfvars
+# enable_eks = true
+
 terraform -chdir=infra/terraform fmt
 terraform -chdir=infra/terraform validate
 terraform -chdir=infra/terraform plan
 ```
 
-plan 마지막 줄을 반드시 읽는다. 대략 다음과 같아야 한다.
+plan 마지막 줄을 반드시 읽는다. EKS만 추가된다면 대략 다음과 같다.
 
 ``` text
 Plan: 12 to add, 1 to change, 0 to destroy.
 ```
 
-- `1 to change`는 `aws_security_group.rds`에 ingress가 추가되는 in-place 변경이다.
-- **`to destroy`가 0이 아니면 apply하지 않는다.** 특히 `aws_db_instance.postgres`,
-  `aws_s3_bucket`, `aws_ecr_repository`가 destroy/replace 목록에 있으면 중단하고
-  diff를 다시 확인한다.
+- `12 to add`는 EKS 관련 리소스다. (Cluster/Node/Pod IAM Role 3개, 정책 연결
+  4개, Pod S3 정책 1개, Cluster, Node Group, Addon, Pod Identity Association)
+- `1 to change`는 `aws_security_group.rds`에 EKS ingress가 추가되는 in-place 변경이다.
+- 아직 적용하지 않은 Day 7.5(JWT 등) ECS 변경이 함께 잡혀 있으면 숫자가 더 클 수
+  있다. 예: `Plan: 16 to add, 3 to change, 1 to destroy.` 이때 EKS 관련 add는
+  약 12개이고, destroy는 **`aws_ecs_task_definition.backend` 교체(replace) 1개만**
+  허용된다. (Task Definition은 수정할 수 없어서 새 revision을 만들고 이전 것을
+  지우는 것으로 표시된다.)
+- **RDS/S3/VPC/ECR 리소스가 destroy/replace 목록에 있으면 apply하지 않는다.**
+  특히 `aws_db_instance.postgres`, `aws_s3_bucket.*`, `aws_vpc.main`,
+  `aws_subnet.*`, `aws_ecr_repository.backend`, `aws_security_group.rds`가 있으면
+  중단하고 diff를 다시 확인한다.
 
 문제가 없으면 적용한다. **EKS 생성에는 보통 15~20분이 걸린다.**
 
@@ -2713,7 +2912,7 @@ kubectl logs -n cloud-file-service POD_NAME --previous | grep -iE "psql|postgres
 ``` text
 로그                                            원인 / 해결
 ---------------------------------------------------------------------------
-Connection timed out / SocketTimeout             RDS SG에 EKS Cluster SG 5432 허용 누락 → 48-1-3, apply 확인
+Connection timed out / SocketTimeout             RDS SG에 EKS ingress 없음 → enable_eks = true로 apply했는지 확인 (48-1-3, 48-1-4)
 UnknownHostException                             DB_URL의 RDS endpoint 오타
 password authentication failed                   DB_USERNAME / DB_PASSWORD 확인 (48-1-8)
 database "cloudfiles" does not exist             DB 이름은 cloud_file
@@ -2767,21 +2966,19 @@ kubectl config current-context
 kubectl delete namespace cloud-file-service
 ```
 
-2) Terraform에서 EKS만 제거한다. RDS SG가 EKS SG를 참조하므로 **3개 파일을
-함께** 되돌려야 한다.
+2) Terraform에서 EKS만 제거한다. `.tf` 파일은 고치지 않고
+`infra/terraform/terraform.tfvars`의 값만 바꾼다.
 
-``` bash
-# (a) eks.tf를 비활성화 (Terraform은 *.tf 파일만 읽는다)
-mv infra/terraform/eks.tf infra/terraform/eks.tf.disabled
+``` hcl
+enable_eks = false
 ```
 
-(b) `infra/terraform/security_groups.tf`에서 `"PostgreSQL from EKS nodes"`
-`ingress` 블록 전체를 삭제한다.
-
-(c) `infra/terraform/output.tf`에서 `eks_cluster_name`,
-`eks_cluster_security_group_id` output 2개를 삭제한다.
+(이 줄을 지워도 된다. 기본값이 `false`다.)
 
 ``` bash
+grep enable_eks infra/terraform/terraform.tfvars
+# enable_eks = false  (또는 아무것도 출력되지 않음)
+
 terraform -chdir=infra/terraform plan
 ```
 
@@ -2791,9 +2988,15 @@ plan 결과가 대략 다음과 같아야 한다.
 Plan: 0 to add, 1 to change, 12 to destroy.
 ```
 
-destroy 목록에 `aws_eks_*`, `aws_iam_role.eks_*` 등 EKS 관련 리소스만 있고
+- `12 to destroy`는 `aws_eks_*`, `aws_iam_role.eks_*`,
+  `aws_iam_role_policy_attachment.eks_*`, `aws_iam_role_policy.eks_pod_s3` 등
+  EKS 관련 리소스다.
+- `1 to change`는 `aws_security_group.rds`에서 `"PostgreSQL from EKS nodes"`
+  ingress가 제거되는 in-place 변경이다.
+
 **`aws_db_instance.postgres`, `aws_s3_bucket.*`, `aws_ecr_repository.backend`,
-`aws_security_group.rds`가 destroy 목록에 없는지** 확인한 뒤 적용한다.
+`aws_vpc.main`, `aws_security_group.rds`가 destroy 목록에 없는지** 확인한 뒤
+적용한다.
 
 ``` bash
 terraform -chdir=infra/terraform apply
@@ -2803,8 +3006,10 @@ terraform -chdir=infra/terraform apply
 EKS 삭제에도 10분 이상 걸릴 수 있다.
 
 > **`terraform destroy -target=aws_eks_cluster.main`을 사용하지 않는다.**
-> `-target` destroy는 대상에 의존하는 리소스까지 함께 삭제한다. RDS 보안 그룹이
-> EKS Cluster SG를 참조하므로 RDS SG와 RDS 인스턴스까지 삭제 대상이 될 수 있다.
+> `-target` destroy는 대상에 의존하는 리소스까지 함께 삭제한다. EKS가 켜져 있는
+> 동안에는 RDS 보안 그룹이 EKS Cluster SG를 참조하므로 RDS SG와 RDS
+> 인스턴스까지 삭제 대상이 될 수 있다. EKS는 항상 `enable_eks = false` + `apply`로
+> 지운다.
 
 3) kubeconfig에서 EKS context를 정리하고 kind로 돌아온다.
 
@@ -2822,12 +3027,14 @@ aws eks list-clusters --region ap-northeast-2
 aws ec2 describe-instances --region ap-northeast-2 \
   --filters "Name=instance-state-name,Values=running" \
   --query 'Reservations[].Instances[].InstanceId'
+terraform -chdir=infra/terraform output eks_cluster_name
+# null 이거나 출력 없음
 ```
 
 `clusters`가 비어 있고 EKS Node EC2가 없으면 비용이 더 나오지 않는다.
 
-다시 EKS를 만들 때는 `eks.tf.disabled`를 `eks.tf`로 되돌리고 48-1-3의 변경을
-다시 넣은 뒤 48-1-4부터 진행한다.
+다시 EKS를 만들 때는 `terraform.tfvars`에 `enable_eks = true`를 넣고 48-1-4부터
+진행한다.
 
 ------------------------------------------------------------------------
 
@@ -3288,6 +3495,19 @@ ECS   → Task Role (Day 4/5)
 kind  → Secret의 AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (13-2, 학습용)
 EKS   → Pod Identity (ServiceAccount cloud-file-service ↔ IAM Role)
 ```
+
+kind에서 업로드가
+`{"message":"Content input stream does not support mark/reset, and was already read once."}`
+로 실패하면 권한보다 **네트워크**를 먼저 의심한다. Pod에서 S3로 연결되는지 확인한다.
+
+``` bash
+P=$(kubectl get pod -n cloud-file-service -o name | head -1)
+kubectl exec -n cloud-file-service $P -- bash -c \
+  '(timeout 5 bash -c "</dev/tcp/s3.ap-northeast-2.amazonaws.com/443" && echo pod-s3-ok) || echo pod-s3-fail'
+```
+
+`pod-s3-fail`이면 [6-1](#6-1-codespaces에서-kind-pod의-외부-통신-열기-필수)의
+`iptables-legacy` 허용 규칙을 실행한다(Codespace 재시작 후 초기화됨).
 
 ------------------------------------------------------------------------
 
@@ -4071,8 +4291,10 @@ k8s/hpa.yaml
 infra/terraform/eks.tf
 k8s/serviceaccount.yaml
 k8s/deployment-eks.yaml
-infra/terraform/security_groups.tf   (RDS SG ingress 추가)
-infra/terraform/output.tf            (eks output 추가)
+infra/terraform/variables.tf         (enable_eks 변수, 기본 false)
+infra/terraform/security_groups.tf   (RDS SG에 EKS용 dynamic ingress)
+infra/terraform/output.tf            (eks output, 꺼져 있으면 null)
+infra/terraform/terraform.tfvars     (로컬 전용: enable_eks = true / false, 커밋하지 않음)
 ```
 
 ## 수정 가능

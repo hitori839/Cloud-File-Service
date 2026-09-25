@@ -8,8 +8,11 @@ public record FolderResponse(
         Long id,
         String name,
         Long parentFolderId,
+        boolean starred,
+        boolean trashed,
         LocalDateTime createdAt,
-        LocalDateTime updatedAt
+        LocalDateTime updatedAt,
+        LocalDateTime trashedAt
 ) {
 
     public static FolderResponse from(FolderEntity folder) {
@@ -23,8 +26,11 @@ public record FolderResponse(
                 folder.getId(),
                 folder.getName(),
                 parentId,
+                folder.isStarred(),
+                folder.isTrashed(),
                 folder.getCreatedAt(),
-                folder.getUpdatedAt()
+                folder.getUpdatedAt(),
+                folder.getTrashedAt()
         );
     }
 }

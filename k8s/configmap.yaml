@@ -6,3 +6,5 @@ metadata:
 data:
   AWS_REGION: "ap-northeast-2"
   S3_BUCKET: "cloud-file-service-dev-files-ccda15c8"
+  # Day 7.5: 이 이메일로 가입하면 관리자(ADMIN)가 된다. 여러 개는 쉼표로 구분.
+  ADMIN_EMAILS: ""

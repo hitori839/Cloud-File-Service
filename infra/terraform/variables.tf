@@ -78,3 +78,14 @@ variable "db_password" {
   type      = string
   sensitive = true
 }
+variable "admin_emails" {
+  type        = string
+  description = "관리자 권한을 받을 이메일 목록 (쉼표로 구분). 이 이메일로 가입하면 ADMIN이 된다."
+  default     = ""
+}
+
+variable "enable_eks" {
+  type        = bool
+  description = "true이면 EKS Cluster/Node Group을 만든다 (Day 7 48-1, 비용 발생)."
+  default     = false
+}

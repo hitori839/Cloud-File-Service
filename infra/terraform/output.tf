@@ -39,9 +39,9 @@ output "rds_security_group_id" {
 }
 
 output "eks_cluster_name" {
-  value = aws_eks_cluster.main.name
+  value = var.enable_eks ? aws_eks_cluster.main[0].name : null
 }
 
 output "eks_cluster_security_group_id" {
-  value = aws_eks_cluster.main.vpc_config[0].cluster_security_group_id
+  value = var.enable_eks ? aws_eks_cluster.main[0].vpc_config[0].cluster_security_group_id : null
 }

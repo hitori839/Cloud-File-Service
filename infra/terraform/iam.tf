@@ -73,7 +73,8 @@ data "aws_iam_policy_document" "task_secrets" {
     ]
 
     resources = [
-      aws_secretsmanager_secret.db_password.arn
+      aws_secretsmanager_secret.db_password.arn,
+      aws_secretsmanager_secret.jwt_secret.arn
     ]
   }
 }

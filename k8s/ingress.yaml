@@ -1,0 +1,17 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cloud-file-service
+  namespace: cloud-file-service
+spec:
+  rules:
+    - host: cloud-file.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: cloud-file-service
+                port:
+                  number: 8080
