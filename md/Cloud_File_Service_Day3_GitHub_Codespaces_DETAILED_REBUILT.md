@@ -4,13 +4,13 @@
 
 > 참고: 로컬 개발에서는 Docker Compose와 PostgreSQL의 기본값이 유효하지만, AWS ECS 배포에서는 `localhost:5432`를 절대로 사용하면 안 된다. 실제 배포 시에는 DB endpoint, IAM, security group, public IP 검증 순서를 먼저 따라야 한다.
 
-> **현재 구현 기준:** 파일 업로드 응답은 S3 key 문자열이 아니라 `FileResponse`이며, 다운로드는 `/api/files/{id}/download`에서 DB의 파일 ID로 수행한다. 현재 업로드 흐름은 `MultipartFile -> S3StorageService -> FileEntity -> FileResponse`이고, PostgreSQL 연결이 backend 시작에 필요하다.
+> **현재 구현 기준:** 최종 저장소(Day 3.5 이후)에서는 파일 업로드 응답이 S3 key 문자열이 아니라 `FileResponse`이며, 다운로드는 `/api/files/{id}/download`에서 DB의 파일 ID로 수행한다. 최종 업로드 흐름은 `MultipartFile -> S3StorageService -> FileEntity -> FileResponse`이고, PostgreSQL 연결이 backend 시작에 필요하다. **이 Day 3 문서는 그 이전 단계**로, `FileController`가 `S3StorageService`를 직접 호출하고 업로드 응답으로 S3 key 문자열을 돌려준다(DB 불필요). Day 3.5에서 이 Controller를 `FileService` + PostgreSQL 구조로 교체한다.
 
 > **개인정보 보호:** AWS access key, secret key, 계정 ID, 개인 파일명과 실제 비밀번호는 이 문서에 기록하지 않는다. 모든 credential 예시는 실행 환경의 환경변수 또는 placeholder로 대체한다.
 
 > **Day 3 목표**
 >
-> Day 1~2에서 만든 파일 업로드/다운로드 서비스의 저장소를 로컬 디스크에서 **Amazon S3**로 변경한다.
+> Day 1~2에서 만든 파일 서비스(메모리에 metadata만 저장하는 JSON API)를 실제 파일을 **Amazon S3**에 저장하는 업로드/다운로드/삭제 API로 바꾼다.
 >
 > 이 문서는 단순히 코드를 보여주는 것이 아니라 **어느 폴더에서, 어떤 파일을 만들고, 기존 코드의 어디를 찾아서 어떻게 수정하는지**를 초보자 기준으로 단계별 설명한다.
 
@@ -48,7 +48,7 @@ Bucket
 Day 2가 대략:
 
 ```text
-Spring Boot → 로컬 파일 시스템
+Spring Boot → In-Memory Repository (파일 metadata만, 실제 파일 없음)
 ```
 
 이었다면 Day 3은:
@@ -254,7 +254,7 @@ Day 3의 핵심은 기존 파일 서비스 기능을 유지하면서 저장 방�
 git status
 ```
 
-변경사항이 없다면 현재 상태를 저장한다.
+Commit하지 않은 변경사항이 있다면 현재 상태를 먼저 저장한다. (`nothing to commit`이면 이 단계는 건너뛴다.)
 
 ```bash
 git add .
@@ -363,6 +363,19 @@ aws --version
 
 정상적으로 설치되어 있어야 한다.
 
+`command not found`가 나오면 AWS CLI v2를 설치한다. (프로젝트 폴더 안에 설치 파일이 생기지 않도록 `/tmp`에서 진행한다.)
+
+```bash
+cd /tmp
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o awscliv2.zip
+unzip -q awscliv2.zip
+sudo ./aws/install
+cd -
+aws --version
+```
+
+> 프로젝트 루트에서 설치했다면 `aws/` 폴더와 `awscliv2.zip`이 Git에 올라가지 않도록 27번에서 `.gitignore`에 추가한다.
+
 ---
 
 # 17. AWS 인증 확인
@@ -374,6 +387,15 @@ aws sts get-caller-identity
 성공하면 AWS 계정 정보가 나온다.
 
 이 명령이 실패한다면 Spring Boot S3 연동보다 먼저 AWS 인증을 해결해야 한다.
+
+인증 방법 예 (둘 중 하나):
+
+```bash
+aws configure
+# → ~/.aws/credentials 에 저장된다 (프로젝트 폴더 밖이므로 Git에 올라가지 않는다)
+```
+
+또는 26번처럼 `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` 환경변수를 export한다. (Codespaces Secrets에 등록해 두면 새 Terminal에서도 자동으로 설정된다.)
 
 ---
 
@@ -568,6 +590,20 @@ ECS로 배포할 때는 장기 Access Key를 Container에 넣지 않고 **ECS Ta
 *.pem
 build/
 .gradle/
+
+# AWS CLI 설치 파일 (프로젝트 루트에서 설치한 경우)
+/aws/
+awscliv2.zip
+
+# Day 3 실습용 테스트 파일
+test-s3.txt
+downloaded-test.txt
+day3.txt
+day3-download.txt
+docker-test.txt
+after-restart.txt
+final.txt
+final-download.txt
 ```
 
 ---
@@ -615,40 +651,48 @@ grep -n "aws" backend/build.gradle
 
 # 30. `backend/build.gradle` 수정
 
-`dependencies { ... }` 안에 다음을 추가한다.
+`dependencies { ... }` 안에 다음 **두 줄**을 추가한다.
 
 ```gradle
+implementation platform('software.amazon.awssdk:bom:2.36.3')
 implementation 'software.amazon.awssdk:s3'
 ```
 
-예:
+> **중요:** Spring Boot의 dependency management는 AWS SDK 버전을 관리하지 않는다. `software.amazon.awssdk:s3`만 버전 없이 추가하면 `Could not find software.amazon.awssdk:s3:.` 오류가 난다. 그래서 AWS SDK BOM(`platform(...)`)으로 버전을 지정한다.
+
+현재 저장소 기준 예 (Day 1에서 Spring Initializr가 만든 dependency 뒤에 추가):
 
 ```gradle
 dependencies {
-    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+    implementation 'org.springframework.boot:spring-boot-starter-webmvc'
+    testImplementation 'org.springframework.boot:spring-boot-starter-actuator-test'
+    testImplementation 'org.springframework.boot:spring-boot-starter-validation-test'
+    testImplementation 'org.springframework.boot:spring-boot-starter-webmvc-test'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+
+    implementation platform('software.amazon.awssdk:bom:2.36.3')
 
     implementation 'software.amazon.awssdk:s3'
-
-    testImplementation 'org.springframework.boot:spring-boot-starter-test'
 }
 ```
 
-기존 dependency는 삭제하지 않는다.
+기존 dependency는 삭제하지 않는다. (`spring-boot-starter-data-jpa`, `postgresql`은 Day 3.5에서 추가한다.)
 
 ---
 
 # 31. AWS SDK 버전 관리
 
-프로젝트가 AWS SDK BOM을 이미 사용하고 있다면:
+30번의:
 
 ```gradle
-implementation platform('software.amazon.awssdk:bom:2.XX.X')
-implementation 'software.amazon.awssdk:s3'
+implementation platform('software.amazon.awssdk:bom:2.36.3')
 ```
 
-처럼 관리할 수 있다.
+가 AWS SDK BOM이다. BOM이 SDK 모듈들(`s3`, `regions`, `auth` 등)의 버전을 한 번에 맞춰 주므로 `s3` dependency에는 버전을 쓰지 않는다.
 
-이미 BOM이 있는 프로젝트에서는 같은 dependency management를 그대로 따른다.
+이미 BOM이 있는 프로젝트에서는 중복 추가하지 않고 같은 dependency management를 그대로 따른다.
 
 ---
 
@@ -687,6 +731,10 @@ backend/src/main/resources/application.properties
 cat src/main/resources/application.properties
 ```
 
+(32번에서 `cd backend` 했으므로 현재 위치는 `backend/`다.)
+
+> **주의 — `application.yml`:** 같은 폴더에 `application.yml`이 있을 수 있다. 두 파일은 동시에 로드되고 같은 키는 `application.properties`가 우선한다. **S3 설정은 `application.properties`에만 추가한다.** `application.yml`에 `cloud.aws.region`, `cloud.aws.s3.bucket`(`AWS_S3_BUCKET`) 같은 키를 넣어도 현재 코드(`@Value("${aws.region}")`, `@Value("${aws.s3.bucket}")`)는 읽지 않으며, 환경변수 이름도 `AWS_S3_BUCKET`이 아니라 `S3_BUCKET`이다.
+
 ---
 
 # 34. 기존 설정을 삭제하지 않는다
@@ -695,6 +743,8 @@ cat src/main/resources/application.properties
 
 ```properties
 spring.application.name=backend
+
+server.address=0.0.0.0
 server.port=8080
 ```
 
@@ -711,7 +761,7 @@ server.port=8080
 aws.region=${AWS_REGION:ap-northeast-2}
 
 # S3
-aws.s3.bucket=${S3_BUCKET}
+aws.s3.bucket=${S3_BUCKET:local-cloud-file-service}
 
 # Multipart
 spring.servlet.multipart.max-file-size=10MB
@@ -738,14 +788,17 @@ AWS_REGION 환경변수가 있으면 그 값을 사용
 # 37. Bucket 설정
 
 ```properties
-aws.s3.bucket=${S3_BUCKET}
+aws.s3.bucket=${S3_BUCKET:local-cloud-file-service}
 ```
 
 뜻:
 
 ```text
-S3_BUCKET 환경변수의 값을 사용
+S3_BUCKET 환경변수가 있으면 그 값을 사용
+없으면 local-cloud-file-service 사용 (placeholder)
 ```
+
+기본값을 두는 이유: `S3_BUCKET`이 없는 Terminal에서 `./gradlew clean build`를 실행해도 테스트(`BackendApplicationTests`의 context load)가 `Could not resolve placeholder 'S3_BUCKET'`로 실패하지 않게 하기 위해서다. 기본값은 실제 Bucket이 아니므로 **실제 업로드 전에는 반드시 `S3_BUCKET`을 export한다.** (그렇지 않으면 업로드 시 `NoSuchBucket` 또는 `AccessDenied`가 난다.)
 
 예:
 
@@ -909,7 +962,7 @@ ECS에서는:
 ECS Task Role
 ```
 
-을 사용하는 방향으로 간다.
+을 사용하는 방향으로 간다. (Day 7의 EKS에서는 같은 역할을 **EKS Pod Identity**가 한다.) 코드에 Credential을 넣지 않았기 때문에 `S3Config`를 바꾸지 않고 실행 환경만 바꿔도 동작한다.
 
 ---
 
@@ -1200,7 +1253,9 @@ grep -R "MultipartFile" src/main/java
 
 # 57. 기존 Controller에서 찾을 코드
 
-Day 2의 코드가 다음과 비슷할 수 있다.
+> **이 시리즈(Day 1~2)를 그대로 따라왔다면:** 로컬 디스크 저장 코드는 없다. 현재 `FileController`는 `FileMetadataService`를 사용하는 **JSON metadata API**(`POST /api/files` + `@RequestBody CreateFileRequest`, `GET /api/files`, `GET /api/files/{id}`, `DELETE /api/files/{id}`, `id`는 `Long`)다. 이 경우 57·58·101·102번의 로컬 디스크 설명은 참고만 하고, 60번 코드로 `FileController.java` **전체를 교체**한다.
+
+다른 프로젝트에서 로컬 디스크에 저장하고 있었다면 코드가 다음과 비슷할 수 있다.
 
 ```java
 Path path = Paths.get("uploads", file.getOriginalFilename());
@@ -1263,7 +1318,11 @@ Lombok을 이미 사용한다면 프로젝트의 기존 방식에 맞춰 생성�
 
 # 60. Upload Controller 예시
 
-Controller가 없다면 다음을 기준으로 만들 수 있다.
+Controller가 없거나, Day 1~2의 JSON metadata `FileController`를 사용 중이라면 `backend/src/main/java/com/example/backend/controller/FileController.java`의 내용을 **아래 코드로 전체 교체**한다. (현재 저장소의 Day 3 Commit도 이렇게 교체했다.)
+
+> 기존 `@GetMapping("/{id}")`(Long)와 새 `@GetMapping("/{key}")`(String)를 한 Controller에 같이 두면 같은 URL 패턴이라 Spring 시작 시 `Ambiguous mapping` 오류가 난다. 기존 JSON `@PostMapping`도 multipart 업로드와 같은 `POST /api/files`를 사용하므로 남겨 두지 않는다.
+>
+> Day 1에서 만든 `domain/`, `dto/`, `service/FileMetadataService`, `repository/`, `exception/` 파일은 삭제하지 않아도 된다. Controller에서 사용하지 않을 뿐이며, 기존 테스트(`FileMetadataServiceTest` 등)도 그대로 통과한다.
 
 ```java
 package com.example.backend.controller;
@@ -1340,7 +1399,7 @@ public class FileController {
 }
 ```
 
-**기존 Controller가 이미 있다면 전체 교체하지 말고 현재 API 구조에 맞춰 `S3StorageService`를 연결한다.**
+**Day 1~2 JSON metadata Controller가 아니라 이미 파일 업로드 기능이 있는 다른 Controller라면**, 전체 교체하지 말고 현재 API 구조에 맞춰 `S3StorageService`를 연결한다. 이때도 같은 URL·HTTP Method 조합의 mapping이 두 개 생기지 않게 한다.
 
 ---
 
@@ -1458,7 +1517,7 @@ aws sts get-caller-identity
 
 # 67. Spring Boot 실행
 
-`backend`에서:
+`backend`에서 (65번의 `AWS_REGION`, `S3_BUCKET`을 export한 **같은 Terminal**에서):
 
 ```bash
 ./gradlew bootRun
@@ -1502,9 +1561,16 @@ grep -R "@RequestMapping" src/main/java
 
 # 70. Upload 테스트
 
-새 Terminal을 연다.
+새 Terminal을 연다. (새 Terminal은 프로젝트 루트에서 시작한다.)
 
-프로젝트 루트 또는 backend 외부에서 테스트 파일 생성:
+`export`한 값은 새 Terminal에 전달되지 않으므로 이 Terminal에서도 다시 설정한다. (72번 `aws s3 ls s3://$S3_BUCKET/`에서 필요)
+
+```bash
+export AWS_REGION=ap-northeast-2
+export S3_BUCKET=YOUR_BUCKET_NAME
+```
+
+프로젝트 루트에서 테스트 파일 생성:
 
 ```bash
 echo "Day 3 S3 integration test" > day3.txt
@@ -1612,6 +1678,8 @@ Docker
 
 이므로 Docker에서도 같은 S3 연결을 확인해야 한다.
 
+**먼저 67번에서 실행한 `./gradlew bootRun`을 `Ctrl + C`로 종료한다.** 그렇지 않으면 8080 포트가 이미 사용 중이라 81번 `docker run -p 8080:8080`이 실패한다.
+
 ---
 
 # 77. JAR 생성
@@ -1627,7 +1695,9 @@ cd backend
 ls build/libs
 ```
 
-JAR 파일이 있어야 한다.
+JAR 파일이 있어야 한다. (`*-plain.jar`까지 2개가 보일 수 있으며 정상이다.)
+
+> 이 단계는 **로컬 빌드/테스트 확인용**이다. Day 2에서 만든 Multi-stage Dockerfile은 Image 안에서 `./gradlew clean bootJar`로 JAR을 다시 만들고, `.dockerignore`가 `**/build`를 제외하므로 여기서 만든 JAR은 Image에 들어가지 않는다.
 
 ---
 
@@ -1651,21 +1721,40 @@ ls
 cat Dockerfile
 ```
 
-예:
+Day 2에서 만든 Multi-stage Dockerfile이 그대로 있어야 한다. (Day 3에서는 Dockerfile을 수정하지 않는다.)
 
 ```dockerfile
+FROM eclipse-temurin:25-jdk AS builder
+
+WORKDIR /workspace
+
+COPY backend/gradlew backend/gradlew
+COPY backend/gradle backend/gradle
+COPY backend/build.gradle backend/settings.gradle backend/
+
+RUN chmod +x backend/gradlew
+
+RUN cd backend && ./gradlew dependencies --no-daemon
+
+COPY backend/src backend/src
+
+RUN cd backend && ./gradlew clean bootJar --no-daemon
+
+
 FROM eclipse-temurin:25-jre
 
 WORKDIR /app
 
-COPY backend/build/libs/*.jar app.jar
+COPY --from=builder /workspace/backend/build/libs/*.jar app.jar
 
 EXPOSE 8080
 
 ENTRYPOINT ["java", "-jar", "app.jar"]
 ```
 
-현재 프로젝트의 Java 버전과 JAR 경로가 다르면 기존 프로젝트 설정을 따른다.
+`build.gradle`이 먼저 COPY되므로 30번에서 추가한 AWS SDK dependency도 Image 빌드 중에 자동으로 받아진다.
+
+> 주의: `COPY backend/build/libs/*.jar app.jar` 형태의 단일 stage Dockerfile은 이 프로젝트에서 동작하지 않는다. `.dockerignore`가 `**/build`를 제외하고, `./gradlew build` 후 `build/libs`에 `*-plain.jar`까지 JAR이 2개 생길 수 있기 때문이다.
 
 ---
 
@@ -1690,6 +1779,8 @@ docker images | grep cloud-file-service
 ```bash
 docker run --rm   -p 8080:8080   -e AWS_REGION="$AWS_REGION"   -e S3_BUCKET="$S3_BUCKET"   -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID"   -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY"   cloud-file-service:day3
 ```
+
+> `aws configure`로 인증했다면 `AWS_ACCESS_KEY_ID` 환경변수가 비어 있어 Container 안에서 `Unable to load credentials`가 난다. 이때는 두 `-e AWS_...KEY...` 대신 `-v ~/.aws:/root/.aws:ro`로 설정 폴더를 읽기 전용으로 연결한다. 임시 Credential(SSO 등)을 쓴다면 `-e AWS_SESSION_TOKEN="$AWS_SESSION_TOKEN"`도 함께 전달한다.
 
 **운영 환경에서 이 방식으로 장기 Secret을 Container에 넣는 것은 권장하지 않는다. Day 4 ECS에서는 Task Role을 사용한다.**
 
@@ -2032,6 +2123,8 @@ echo "$S3_BUCKET"
 export S3_BUCKET=YOUR_BUCKET_NAME
 ```
 
+그리고 `application.properties`가 35번처럼 `${S3_BUCKET:local-cloud-file-service}` (기본값 포함) 형태인지 확인한다.
+
 ---
 
 # 97. Gradle 오류
@@ -2049,6 +2142,8 @@ repositories
 dependency
 Gradle sync
 ```
+
+특히 `implementation platform('software.amazon.awssdk:bom:...')` 줄이 빠지지 않았는지 확인한다(30번).
 
 그리고:
 
@@ -2285,7 +2380,9 @@ Day 3 기본 구현이 성공한 다음 확장 기능으로 공부한다.
 
 ```text
                 Spring Boot
-                /                        /                         v             v
+                /         \
+               /           \
+              v             v
              S3             DB
               |              |
               |              +-- 파일명
@@ -2317,7 +2414,7 @@ S3
 
 연결이다.
 
-DB 메타데이터는 이후 확장한다.
+DB 메타데이터는 Day 3.5에서 PostgreSQL + JPA(`FileEntity`, `FolderEntity`)로 확장한다. 그때 `FileController`는 `FileService`를 거치도록 다시 바뀌고, 다운로드 경로도 `/api/files/{id}/download`로 바뀐다.
 
 ---
 
@@ -2350,6 +2447,8 @@ cd backend
 
 ## 5. 테스트 파일
 
+`bootRun`이 실행 중인 Terminal은 그대로 두고, **다른 Terminal(프로젝트 루트, `AWS_REGION`/`S3_BUCKET` export 완료)**에서 진행한다. (Docker Container가 아직 8080에서 실행 중이라면 먼저 종료해 둔다.)
+
 ```bash
 echo "Day3 final test" > final.txt
 ```
@@ -2358,6 +2457,12 @@ echo "Day3 final test" > final.txt
 
 ```bash
 curl -X POST   -F "file=@final.txt"   http://localhost:8080/api/files
+```
+
+반환된 Key를 저장한다. (이전 테스트의 `FILE_KEY`를 그대로 쓰면 안 된다.)
+
+```bash
+export FILE_KEY="반환된_KEY"
 ```
 
 ## 7. S3 확인
@@ -2387,6 +2492,8 @@ curl -X DELETE   "http://localhost:8080/api/files/${FILE_KEY}"
 ---
 
 # 110. Docker 최종 테스트
+
+109번의 `bootRun`을 `Ctrl + C`로 종료한 뒤, **프로젝트 루트**에서 진행한다.
 
 ## Build
 
@@ -2509,6 +2616,12 @@ git ls-files | grep -E '(^|/)\.env($|\.)'
 
 실제 Secret이 Git에 올라간 경우 단순히 파일을 삭제하는 것만으로 끝나지 않을 수 있으므로 해당 Credential을 폐기/교체해야 한다.
 
+`git status`에 실습용 테스트 파일(`test-s3.txt`, `day3.txt`, `final.txt` 등)이나 `aws/`, `awscliv2.zip`이 보이면 27번의 `.gitignore`에 추가했는지 확인하거나 삭제한다.
+
+```bash
+rm -f test-s3.txt downloaded-test.txt day3.txt day3-download.txt docker-test.txt after-restart.txt final.txt final-download.txt
+```
+
 ---
 
 # 115. Git Commit
@@ -2545,19 +2658,23 @@ cloud-file-service/
 │       │       ├── BackendApplication.java
 │       │       │
 │       │       ├── controller/
-│       │       │   └── FileController.java
+│       │       │   ├── FileController.java      ← S3 버전으로 교체
+│       │       │   └── HealthController.java
 │       │       │
 │       │       ├── config/
-│       │       │   └── S3Config.java
+│       │       │   └── S3Config.java            ← 새로 생성
 │       │       │
-│       │       └── storage/
-│       │           └── S3StorageService.java
+│       │       ├── storage/
+│       │       │   └── S3StorageService.java    ← 새로 생성
+│       │       │
+│       │       └── domain/ dto/ exception/ repository/ service/
+│       │                                        ← Day 1 파일 그대로 유지
 │       │
 │       └── resources/
-│           └── application.properties
+│           └── application.properties          ← AWS/S3/Multipart 설정 추가
 │
-├── Dockerfile
-├── docker-compose.yml
+├── Dockerfile                                  ← Day 2 그대로
+├── docker-compose.yml                          ← Day 2 그대로 (Day 3에서는 수정하지 않음)
 ├── .gitignore
 └── README.md
 ```

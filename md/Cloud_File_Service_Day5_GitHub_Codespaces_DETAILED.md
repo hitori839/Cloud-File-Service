@@ -12,7 +12,9 @@
 > `S3StorageService`는 그대로 유지한다. Day 5의 중심은 애플리케이션 기능
 > 추가가 아니라 **AWS 인프라를 Terraform으로 코드화하는 것**이다.
 
-> **현재 구현 기준:** Terraform 파일은 이미 `infra/terraform/`에 존재한다. 이 문서는 파일을 무조건 새로 만드는 튜토리얼이 아니라 현재 파일을 검토하고 `terraform init`, `validate`, `plan` 순서로 확인하는 문서다. Terraform state에는 secret이 포함될 수 있으므로 state와 실제 변수값을 문서나 Git에 기록하지 않는다.
+> **현재 구현 기준:** 완성된 저장소에는 Terraform 파일이 이미 `infra/terraform/`에 존재한다. 처음 따라하는 경우에는 아래 순서대로 파일을 하나씩 만들고, 이미 파일이 있다면 문서의 코드와 비교·검토한 뒤 `terraform init`, `validate`, `plan` 순서로 확인한다. Terraform state에는 secret이 포함될 수 있으므로 state와 실제 변수값을 문서나 Git에 기록하지 않는다.
+>
+> 참고: 최종 저장소에는 Day 7에서 추가하는 `eks.tf`가 있고, `security_groups.tf`/`output.tf`에도 EKS 관련 내용이 추가되어 있다. Day 5에서는 EKS를 만들지 않으므로 이 문서의 코드만 작성하면 된다.
 
 > **개인정보 보호:** AWS 계정 ID, ARN, DB endpoint, 실제 비밀번호, 개인 식별 정보는 사용하지 않는다. 모든 값은 `YOUR_AWS_ACCOUNT_ID`, `YOUR_DB_PASSWORD`, `example-bucket` 같은 placeholder로 유지한다.
 
@@ -135,7 +137,7 @@ cloud-file-service/
 │       ├── providers.tf
 │       ├── variables.tf
 │       ├── locals.tf
-│       ├── outputs.tf
+│       ├── output.tf
 │       ├── vpc.tf
 │       ├── security_groups.tf
 │       ├── s3.tf
@@ -145,9 +147,13 @@ cloud-file-service/
 │       ├── secrets.tf
 │       ├── rds.tf
 │       ├── ecs.tf
-│       └── terraform.tfvars.example
+│       ├── terraform.tfvars.example
+│       └── .terraform.lock.hcl   ← terraform init이 자동 생성 (Git에 Commit)
 └── .gitignore
 ```
+
+> `terraform.tfvars`(실제 비밀번호), `terraform.tfstate*`, `.terraform/`는
+> 로컬에만 생기고 Git에 올리지 않는다(45절 참고).
 
 ------------------------------------------------------------------------
 
@@ -160,6 +166,11 @@ git status
 ```
 
 문제가 없다면:
+
+> ⚠️ `git add .` 전에 `git status`/`git diff`로 `infra/ecs-task-definition.json`
+> 등에 실제 DB Password, AWS 계정 ID, RDS endpoint가 들어 있지 않은지
+> 확인한다. Day 4 JSON에 실제 값을 넣었다면 placeholder로 되돌린 뒤
+> Commit한다. (한 번 Push된 비밀번호는 RDS에서 변경해야 한다.)
 
 ``` bash
 git add .
@@ -195,17 +206,21 @@ aws sts get-caller-identity
 terraform version
 ```
 
-Provider 확인:
+`Terraform v1.6` 이상이 표시되면 된다. (Provider 확인 `terraform providers`는
+`.tf` 파일을 만들고 `terraform init`을 한 뒤 50절에서 실행한다.)
+
+Terraform이 없다면(`command not found`) Codespaces에 HashiCorp 공식 APT
+저장소로 설치한다. (이 저장소에는 `.devcontainer`가 없으므로 수동 설치한다.)
 
 ``` bash
-terraform providers
+sudo apt-get update && sudo apt-get install -y gnupg software-properties-common wget
+wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+sudo apt-get update && sudo apt-get install -y terraform
+terraform version
 ```
 
-Terraform이 없다면 Codespaces의 `.devcontainer` 설정을 먼저 확인한다.
-
-``` bash
-ls -la .devcontainer
-```
+> Codespace를 새로 만들면(Rebuild 포함) 다시 설치해야 할 수 있다.
 
 ------------------------------------------------------------------------
 
@@ -728,6 +743,9 @@ ECS SG → RDS SG : 5432
 
 만 허용한다.
 
+> Day 7에서 EKS를 추가할 때 이 `aws_security_group.rds`에 "EKS Cluster SG →
+> 5432" ingress 블록을 하나 더 추가한다. Day 5에서는 위 코드 그대로 둔다.
+
 ------------------------------------------------------------------------
 
 # 23. S3
@@ -957,7 +975,8 @@ resource "aws_iam_role_policy_attachment" "execution" {
 
 ``` text
 Execution Role
-→ ECR Pull / CloudWatch Logs 등 Task 실행에 필요한 권한
+→ ECR Pull / CloudWatch Logs / Secrets Manager 값 주입(secrets) 등
+  Task 실행에 필요한 권한 (ECS Agent가 사용)
 
 Task Role
 → Spring Boot가 S3 등을 호출할 때 사용하는 권한
@@ -997,9 +1016,21 @@ resource "aws_secretsmanager_secret_version" "db_password" {
 들어갈 수 있다. 학습용으로는 구조를 이해할 수 있지만, 운영 환경에서는
 Secret과 Terraform State 보호 방식을 별도로 설계해야 한다.
 
+> Secrets Manager Secret은 삭제해도 기본 30일 동안 "삭제 예정" 상태로
+> 남는다. `terraform destroy` 후 바로 다시 `apply`하면 같은 이름 때문에
+> `InvalidRequestException ... scheduled for deletion` 오류가 날 수 있다.
+> 이때는 `aws secretsmanager delete-secret --secret-id cloud-file-service-dev/db-password --force-delete-without-recovery --region ap-northeast-2`
+> 로 완전히 삭제한 뒤 다시 Apply한다.
+
 ------------------------------------------------------------------------
 
-# 32. Task Role에 Secret 권한
+# 32. Execution Role에 Secret 권한
+
+Task Definition의 `secrets`(37절) 값은 **컨테이너가 시작되기 전에 ECS
+Agent가 Execution Role로 읽어서** 환경변수로 넣어준다. 따라서
+`secretsmanager:GetSecretValue` 권한은 Task Role이 아니라 **Execution
+Role**에 붙여야 한다. (Task Role에 붙이면 Task가
+`ResourceInitializationError: unable to pull secrets`로 실패한다.)
 
 `iam.tf`에 추가:
 
@@ -1018,9 +1049,9 @@ data "aws_iam_policy_document" "task_secrets" {
   }
 }
 
-resource "aws_iam_role_policy" "task_secrets" {
+resource "aws_iam_role_policy" "execution_secrets" {
   name   = "${local.name_prefix}-task-secrets"
-  role   = aws_iam_role.task.id
+  role   = aws_iam_role.execution.id
   policy = data.aws_iam_policy_document.task_secrets.json
 }
 ```
@@ -1219,15 +1250,25 @@ resource "aws_ecs_task_definition" "backend" {
 
 # 38. Spring Boot 설정과 이름을 맞춰라
 
-Day 4에서 `application.properties`가:
+현재 `backend/src/main/resources/application.properties`는:
 
 ``` properties
-spring.datasource.url=${DB_URL:jdbc:postgresql://localhost:5432/cloud_file}
-spring.datasource.username=${DB_USERNAME:cloud_user}
-spring.datasource.password=${DB_PASSWORD:cloud_password}
+spring.datasource.url=${SPRING_DATASOURCE_URL:${DB_URL:jdbc:postgresql://localhost:5432/cloud_file}}
+spring.datasource.username=${SPRING_DATASOURCE_USERNAME:${DB_USERNAME:cloud_user}}
+spring.datasource.password=${SPRING_DATASOURCE_PASSWORD:${DB_PASSWORD:cloud_password}}
+
+aws.region=${AWS_REGION:ap-northeast-2}
+aws.s3.bucket=${S3_BUCKET:local-cloud-file-service}
 ```
 
-라면 위 ECS 설정과 그대로 연결된다.
+이므로 위 ECS 설정(`DB_URL`, `DB_USERNAME`, `DB_PASSWORD`, `AWS_REGION`,
+`S3_BUCKET`)과 그대로 연결된다. Day 4처럼 `SPRING_DATASOURCE_*`를 써도
+동작하지만(우선순위가 더 높음) Day 5 Terraform은 `DB_*` 이름을 사용한다.
+
+> 주의: `application.yml`에 남아 있는 `cloud.aws.s3.bucket`(`AWS_S3_BUCKET`)
+> 키는 코드에서 사용하지 않는다. 코드(`S3StorageService`, `S3Config`)는
+> `aws.s3.bucket`/`aws.region`을 읽으므로 환경변수 이름은 `S3_BUCKET`이어야
+> 한다. `AWS_S3_BUCKET`을 넣으면 Bucket이 기본값으로 떨어진다.
 
 즉:
 
@@ -1335,8 +1376,12 @@ RDS
 파일:
 
 ``` text
-infra/terraform/outputs.tf
+infra/terraform/output.tf
 ```
+
+(파일 이름은 `outputs.tf`로 해도 Terraform은 동작하지만, 이 저장소와 이후
+Day 문서는 `output.tf`를 기준으로 한다. Day 7에서 여기에 `eks_*` Output을
+추가한다.)
 
 ``` hcl
 output "vpc_id" {
@@ -1428,6 +1473,12 @@ ecs_desired_count = 1
 
 를 넣는다.
 
+> RDS Master Password 규칙: 8자 이상, `/`, `@`, `"`, 공백은 사용할 수 없다.
+> 규칙을 어기면 `terraform apply` 중 `InvalidParameterValue`로 실패한다.
+>
+> Day 5 Terraform은 Day 4의 RDS와 **별개인 새 RDS**(`cloud_file` DB, 비어 있음)를
+> 만든다. Day 4 RDS의 데이터는 자동으로 옮겨지지 않는다.
+
 **Git Commit하지 않는다.**
 
 ------------------------------------------------------------------------
@@ -1454,6 +1505,10 @@ infra/terraform/*.tfvars
 .gradle/
 **/build/
 ```
+
+> 이미 같은 의미의 규칙(`/infra/terraform/*.tfvars` 등)이 있다면 중복으로
+> 추가할 필요는 없다. `.terraform.lock.hcl`은 Provider 버전을 고정하는
+> 파일이므로 ignore하지 않고 Commit한다.
 
 ------------------------------------------------------------------------
 
@@ -1609,6 +1664,16 @@ AlreadyExists
 
 가 발생할 수 있다.
 
+> 이 문서의 기본값(`project_name = "cloud-file-service"`, `environment = "dev"`)을
+> 쓰면 Terraform 리소스 이름은 모두 `cloud-file-service-dev...`가 된다.
+> Day 4에서 CLI로 만든 이름(ECR `cloud-file-service`, Cluster
+> `cloud-file-service-cluster`, Log Group `/ecs/cloud-file-service`, Role
+> `cloud-file-service-task-role`, SG `cloud-file-service-sg`)과 다르므로
+> 보통 `AlreadyExists`는 나지 않고 **새 환경이 따로 생성**된다.
+> 대신 Day 4 ECS Service/RDS도 계속 과금되므로, Day 5 환경이 정상 동작하는
+> 것을 확인한 뒤 Day 4 리소스(ECS Service desired count 0 또는 삭제, Day 4
+> RDS 등)는 필요 없으면 정리한다.
+
 ------------------------------------------------------------------------
 
 # 54. 기존 Resource를 함부로 삭제하지 않는다
@@ -1673,6 +1738,12 @@ terraform plan
 ```
 
 으로 코드와 실제 설정의 차이를 확인한다.
+
+> ⚠️ Import한 리소스의 실제 이름이 코드의 이름과 다르면(예: Day 4 ECR
+> `cloud-file-service`를 `name = local.name_prefix` =
+> `cloud-file-service-dev`인 코드에 Import) Plan에서 `-/+`(삭제 후 재생성)가
+> 나온다. 이 문서 흐름에서는 Import하지 않고 새 환경을 만드는 것(57절)을
+> 기준으로 한다.
 
 ------------------------------------------------------------------------
 
@@ -1739,6 +1810,12 @@ yes
 ```
 
 입력한다.
+
+> RDS 생성 때문에 Apply는 보통 5~15분 걸린다.
+>
+> Apply 직후에는 새 ECR(`cloud-file-service-dev`)이 **비어 있으므로** ECS
+> Task가 `CannotPullContainerError`로 실패·재시도하는 것이 정상이다.
+> 60~65절에서 `latest` Image를 Push하면 해결된다.
 
 ------------------------------------------------------------------------
 
@@ -1855,15 +1932,22 @@ image = "${aws_ecr_repository.backend.repository_url}:latest"
 latest
 ```
 
-Tag가 필요하다.
-
-Day 5에서는 다음처럼 Push할 수도 있다.
+Tag가 **반드시** 필요하다. `day5` Tag만 Push하면 ECS는 Image를 찾지 못한다.
 
 ``` bash
 docker tag   cloud-file-service:day5   "${ECR_URI}:latest"
 
 docker push "${ECR_URI}:latest"
 ```
+
+Push 후 ECS Service가 새 Image로 Task를 다시 띄우도록 한다.
+
+``` bash
+aws ecs update-service   --cluster "$(terraform output -raw ecs_cluster_name)"   --service "$(terraform output -raw ecs_service_name)"   --force-new-deployment   --region "$AWS_REGION"
+```
+
+(이 명령은 `infra/terraform`에서 실행한다. 이후 `latest`를 다시 Push할 때도
+같은 명령으로 재배포한다.)
 
 ------------------------------------------------------------------------
 
@@ -2027,7 +2111,25 @@ Day 4에서 만든:
 
 를 사용한다.
 
+Task의 Public IP 확인(70절의 `TASK_ID` 사용):
+
+``` bash
+export ENI_ID=$(aws ecs describe-tasks   --cluster "$ECS_CLUSTER"   --tasks "$TASK_ID"   --region "$AWS_REGION"   --query "tasks[0].attachments[0].details[?name=='networkInterfaceId'].value"   --output text)
+
+export PUBLIC_IP=$(aws ec2 describe-network-interfaces   --network-interface-ids "$ENI_ID"   --region "$AWS_REGION"   --query 'NetworkInterfaces[0].Association.PublicIp'   --output text)
+
+echo "$PUBLIC_IP"
+```
+
+``` bash
+curl "http://${PUBLIC_IP}:8080/health"
+curl "http://${PUBLIC_IP}:8080/actuator/health"
+```
+
 Container가 RUNNING인지와 Application이 정상인지 둘 다 확인한다.
+
+> Task가 교체되면(재배포, Scale, stop-task) Public IP가 바뀐다. 이때는 70절과
+> 이 절의 명령을 다시 실행한다.
 
 ------------------------------------------------------------------------
 
@@ -2130,7 +2232,8 @@ Spring Boot
 S3
 ```
 
-그 다음 Task를 종료한다.
+그 다음 Task를 종료한다. (77절 원복 과정에서 Task가 바뀌었을 수 있으므로
+70절의 `TASK_ARN`을 먼저 다시 조회한다.)
 
 ``` bash
 aws ecs stop-task   --cluster "$ECS_CLUSTER"   --task "$TASK_ARN"   --reason "Day5 stateless test"   --region "$AWS_REGION"
@@ -2621,6 +2724,10 @@ RDS
 S3
 ```
 
+Stop Reason이 `ResourceInitializationError: unable to pull secrets or registry auth`
+이면 32절의 `execution_secrets` Policy가 **Execution Role**에 붙어 있는지
+확인한다.
+
 ------------------------------------------------------------------------
 
 # 101. ECS에서 DB 연결 실패
@@ -2640,7 +2747,7 @@ RDS_ENDPOINT:5432
 Spring Boot:
 
 ``` properties
-spring.datasource.url=${DB_URL}
+spring.datasource.url=${SPRING_DATASOURCE_URL:${DB_URL:jdbc:postgresql://localhost:5432/cloud_file}}
 ```
 
 ECS:
@@ -2802,7 +2909,7 @@ terraform plan
 [ ] Execution Role
 [ ] Task Role
 [ ] S3 Permission
-[ ] Secrets Manager Permission
+[ ] Secrets Manager Permission (Execution Role)
 ```
 
 ## Monitoring
@@ -3213,7 +3320,13 @@ git status
 ``` bash
 git add infra/terraform
 git add .gitignore
+git status
 ```
+
+Staged 목록에 `.tf` 파일, `.terraform.lock.hcl`,
+`terraform.tfvars.example`만 있고 `terraform.tfvars`, `terraform.tfstate*`,
+`.terraform/`, 명령 오타로 생긴 잘못된 파일(예: `tatus --short --ignored`)이
+없는지 확인한다. 잘못 올라간 파일은 `git restore --staged <파일>`로 뺀다.
 
 ``` bash
 git commit -m "add terraform infrastructure for cloud file service"

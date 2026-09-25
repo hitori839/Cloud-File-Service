@@ -1,7 +1,9 @@
 {
   "family": "cloud-file-service",
   "networkMode": "awsvpc",
-  "requiresCompatibilities": ["FARGATE"],
+  "requiresCompatibilities": [
+    "FARGATE"
+  ],
   "cpu": "512",
   "memory": "1024",
   "executionRoleArn": "arn:aws:iam::358545165495:role/ecsTaskExecutionRole",

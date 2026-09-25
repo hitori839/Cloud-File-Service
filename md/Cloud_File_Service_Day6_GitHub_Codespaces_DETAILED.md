@@ -223,11 +223,35 @@ grep -Rni "class FolderController" backend/src/main/java
 > Day 4 문서에서 `/api/files`는 예시로 사용된 적이 있으므로 현재
 > 프로젝트의 실제 Controller Mapping을 우선한다.
 
+현재 저장소(`FileController`, `FolderController`) 기준으로 채우면 다음과 같다.
+
+``` text
+기능                 실제 경로                                   Method
+-----------------------------------------------------------------------------
+파일 목록             /api/files?folderId={id} (root는 생략)       GET
+파일 업로드           /api/files (multipart: file, folderId 선택)  POST
+파일 다운로드         /api/files/{id}/download                     GET
+파일 삭제             /api/files/{id}                              DELETE
+파일 이름 변경        /api/files/{id}/rename?name={name}           PATCH
+파일 이동             /api/files/{id}/move?folderId={id}           PATCH  (root는 folderId 생략)
+폴더 목록             /api/folders?parentFolderId={id}             GET    (root는 생략)
+폴더 생성             /api/folders  JSON {name, parentFolderId}    POST
+폴더 이름 변경        /api/folders/{id}  JSON {name}               PATCH
+폴더 이동             (없음)                                        -
+폴더 삭제             /api/folders/{id}                            DELETE
+```
+
+> 파일은 `folderId`, 폴더는 `parentFolderId`를 사용한다. 이름이 다르므로
+> 헷갈리지 않는다. 폴더 이동 API는 현재 Backend에 없으므로 Frontend도
+> 파일 이동만 구현한다.
+
 ------------------------------------------------------------------------
 
 # 6. Backend 응답 JSON 확인
 
-GET API를 실제로 호출한다.
+GET API를 실제로 호출한다. (Backend가 실행 중이어야 한다. 실행 방법은
+35절 참고. Codespace 터미널의 `curl`은 Codespace 내부에서 실행되므로
+`localhost:8080`이 그대로 동작한다.)
 
 예:
 
@@ -261,6 +285,21 @@ Backend가:
 
 **JSON 필드 이름을 추측하지 않는다.**
 
+현재 저장소의 실제 응답 필드(`dto/FileResponse.java`, `dto/FolderResponse.java`):
+
+``` bash
+curl -i http://localhost:8080/api/files
+curl -i http://localhost:8080/api/folders
+```
+
+``` text
+파일: id, name, originalName, size, contentType, folderId, createdAt, updatedAt
+폴더: id, name, parentFolderId, createdAt, updatedAt
+```
+
+따라서 이 문서의 Frontend 코드는 `file.name`, `file.size`,
+`file.contentType`, `folder.name`을 사용한다.
+
 ------------------------------------------------------------------------
 
 # 7. Frontend 생성
@@ -272,11 +311,18 @@ mkdir frontend
 cd frontend
 ```
 
+> 이미 `frontend/`가 있는 저장소(현재 저장소)라면 이 절은 건너뛰고
+> `cd frontend && npm install`만 실행한다.
+
 Vite React 생성:
 
 ``` bash
 npm create vite@latest . -- --template react
 ```
+
+> 질문이 나오면 Framework `React`, Variant `JavaScript`를 선택한다.
+> 현재 저장소는 React 19 + Vite 8 템플릿으로 생성되었다. 추가 npm 패키지는
+> 필요 없다(`fetch`, React Hook만 사용).
 
 설치:
 
@@ -329,8 +375,7 @@ frontend/
 │   │   ├── ErrorMessage.jsx
 │   │   ├── CreateFolderModal.jsx
 │   │   ├── RenameModal.jsx
-│   │   ├── MoveModal.jsx
-│   │   └── UploadArea.jsx
+│   │   └── MoveModal.jsx
 │   ├── hooks/
 │   │   └── useDrive.js
 │   ├── utils/
@@ -348,6 +393,15 @@ frontend/
 └── vite.config.js
 ```
 
+> `.env.local`은 Git에 올리지 않는 개인 설정 파일이다(11절).
+> 업로드는 별도 `UploadArea` 없이 `Toolbar`의 파일 선택 버튼으로 처리한다.
+
+폴더를 먼저 만든다(`frontend/`에서):
+
+``` bash
+mkdir -p src/api src/components src/hooks src/utils
+```
+
 ------------------------------------------------------------------------
 
 # 10. 환경변수
@@ -359,29 +413,43 @@ frontend/.env.example
 ```
 
 ``` env
-VITE_API_BASE_URL=http://localhost:8080
+VITE_API_BASE_URL=
+VITE_API_TARGET=http://localhost:8080
 ```
 
-실제 개발 파일:
+실제 개발 파일(`cp .env.example .env.local`로 만든다):
 
 ``` text
 frontend/.env.local
 ```
 
+**Codespaces에서는 Vite Proxy 방식(34절)을 사용한다.** 현재 Backend에는
+CORS 설정이 없고, Codespaces 브라우저의 `localhost:8080`은 내 PC를
+가리키므로 `VITE_API_BASE_URL=http://localhost:8080`으로 두면 목록 요청이
+`Failed to fetch`/CORS 오류로 실패한다. 현재 저장소의 `.env.local`도 다음
+형태다.
+
 로컬 Backend라면:
 
 ``` env
-VITE_API_BASE_URL=http://localhost:8080
+VITE_API_BASE_URL=
+VITE_API_TARGET=http://localhost:8080
 ```
 
 ECS를 직접 테스트한다면 임시로:
 
 ``` env
-VITE_API_BASE_URL=http://PUBLIC_IP:8080
+VITE_API_BASE_URL=
+VITE_API_TARGET=http://PUBLIC_IP:8080
 ```
 
+- `VITE_API_BASE_URL=` (빈 값) → 브라우저는 `/api/...` 상대 경로로 요청한다.
+- `VITE_API_TARGET` → Vite 개발 서버가 `/api` 요청을 전달할 Backend 주소
+  (`vite.config.js`에서만 사용, 브라우저 번들에는 들어가지 않는다).
+
 > ECS Task Public IP는 교체될 수 있으므로 영구적인 Frontend 주소로
-> 사용하지 않는다.
+> 사용하지 않는다. `.env.local`을 바꾼 뒤에는 `npm run dev`를 다시
+> 시작해야 반영된다.
 
 ------------------------------------------------------------------------
 
@@ -395,6 +463,9 @@ dist/
 .env
 .env.local
 ```
+
+> Vite 템플릿의 `.gitignore`에는 이미 `node_modules`, `dist`, `*.local`이
+> 있으므로 위 내용은 명시적으로 한 번 더 적는 것이다(현재 저장소와 동일).
 
 `.env.example`은 Commit한다.
 
@@ -458,13 +529,23 @@ export { API_BASE_URL };
 frontend/src/api/fileApi.js
 ```
 
-기본 형태:
+현재 저장소 기준 최종 형태(다운로드/이름 변경/이동 포함):
 
 ``` javascript
 import { request } from "./client";
 
-export function getFiles(path = "") {
-  return request(`/api/files${path}`);
+export function getFiles(folderId) {
+  const query = new URLSearchParams();
+
+  if (folderId !== null && folderId !== undefined) {
+    query.set("folderId", folderId);
+  }
+
+  const suffix = query.toString()
+    ? `?${query.toString()}`
+    : "";
+
+  return request(`/api/files${suffix}`);
 }
 
 export function uploadFile(file, folderId) {
@@ -487,10 +568,45 @@ export function deleteFile(id) {
     method: "DELETE",
   });
 }
+
+export function downloadFile(id) {
+  return request(`/api/files/${id}/download`);
+}
+
+export function renameFile(id, name) {
+  const query = new URLSearchParams({ name });
+
+  return request(`/api/files/${id}/rename?${query.toString()}`, {
+    method: "PATCH",
+  });
+}
+
+export function moveFile(id, folderId) {
+  const query = new URLSearchParams();
+
+  if (folderId !== null && folderId !== undefined) {
+    query.set("folderId", folderId);
+  }
+
+  const suffix = query.toString()
+    ? `?${query.toString()}`
+    : "";
+
+  return request(`/api/files/${id}/move${suffix}`, {
+    method: "PATCH",
+  });
+}
 ```
 
 > **반드시 실제 Controller에 맞춰 수정:** `/api/files`, `folderId`,
 > `id`가 실제 프로젝트와 다르면 여기만 먼저 수정한다.
+>
+> - 업로드 시 `Content-Type`을 직접 지정하지 않는다. `FormData`를 넣으면
+>   브라우저가 `multipart/form-data; boundary=...`를 자동으로 붙인다.
+> - `renameFile`은 JSON Body가 아니라 **Query Parameter** `name`을 사용한다
+>   (`@RequestParam String name`).
+> - `downloadFile`은 JSON이 아닌 응답이므로 `request()`가 `Response` 객체를
+>   그대로 돌려준다(43절에서 `blob()`으로 변환).
 
 ------------------------------------------------------------------------
 
@@ -505,8 +621,21 @@ frontend/src/api/folderApi.js
 ``` javascript
 import { request } from "./client";
 
-export function getFolders(path = "") {
-  return request(`/api/folders${path}`);
+export function getFolders(parentFolderId) {
+  const query = new URLSearchParams();
+
+  if (
+    parentFolderId !== null &&
+    parentFolderId !== undefined
+  ) {
+    query.set("parentFolderId", parentFolderId);
+  }
+
+  const suffix = query.toString()
+    ? `?${query.toString()}`
+    : "";
+
+  return request(`/api/folders${suffix}`);
 }
 
 export function createFolder(name, parentId) {
@@ -517,8 +646,18 @@ export function createFolder(name, parentId) {
     },
     body: JSON.stringify({
       name,
-      parentId,
+      parentFolderId: parentId,
     }),
+  });
+}
+
+export function renameFolder(id, name) {
+  return request(`/api/folders/${id}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ name }),
   });
 }
 
@@ -530,6 +669,11 @@ export function deleteFolder(id) {
 ```
 
 실제 `FolderController`의 DTO와 Mapping에 맞춘다.
+
+> `CreateFolderRequest`의 필드는 `name`, `parentFolderId`이다. `parentId`로
+> 보내면 Backend가 무시하여 **하위 폴더가 항상 root에 생성**된다. 목록 조회도
+> `?parentFolderId=`를 사용해야 한다(`?folderId=`로 보내면 항상 root 폴더
+> 목록이 나온다).
 
 ------------------------------------------------------------------------
 
@@ -716,7 +860,11 @@ function Toolbar({
         + 새 폴더
       </button>
 
-      <label className="secondary-button">
+      <label
+        className={`secondary-button${
+          uploading ? " is-uploading" : ""
+        }`}
+      >
         {uploading
           ? "업로드 중..."
           : "파일 업로드"}
@@ -763,6 +911,8 @@ import {
 function FileRow({
   file,
   onDownload,
+  onRename,
+  onMove,
   onDelete,
 }) {
   return (
@@ -781,6 +931,14 @@ function FileRow({
           다운로드
         </button>
 
+        <button onClick={() => onRename(file)}>
+          이름 변경
+        </button>
+
+        <button onClick={() => onMove(file)}>
+          이동
+        </button>
+
         <button onClick={() => onDelete(file)}>
           삭제
         </button>
@@ -793,6 +951,10 @@ export default FileRow;
 ```
 
 실제 DTO가 `fileName`이면 `file.name`을 `file.fileName`으로 바꾼다.
+(현재 저장소의 `FileResponse`는 `name`이다.)
+
+> `onRename`, `onMove`는 27절 `App.jsx`에서 전달한다. 이 Prop을 넘기지 않은
+> 상태에서 버튼을 누르면 `onRename is not a function` 오류가 난다.
 
 ------------------------------------------------------------------------
 
@@ -808,6 +970,7 @@ frontend/src/components/FolderRow.jsx
 function FolderRow({
   folder,
   onOpen,
+  onRename,
   onDelete,
 }) {
   return (
@@ -828,6 +991,12 @@ function FolderRow({
       </div>
 
       <div className="row-actions">
+        <button
+          onClick={() => onRename(folder)}
+        >
+          이름 변경
+        </button>
+
         <button
           onClick={() => onDelete(folder)}
         >
@@ -1039,12 +1208,16 @@ import {
 import {
   getFiles,
   uploadFile,
+  downloadFile,
+  renameFile,
+  moveFile,
   deleteFile,
 } from "../api/fileApi";
 
 import {
   getFolders,
   createFolder,
+  renameFolder,
   deleteFolder,
 } from "../api/folderApi";
 
@@ -1062,14 +1235,10 @@ function useDrive() {
       setError("");
 
       try {
-        const query = folderId
-          ? `?folderId=${folderId}`
-          : "";
-
         const [fileResult, folderResult] =
           await Promise.all([
-            getFiles(query),
-            getFolders(query),
+            getFiles(folderId),
+            getFolders(folderId),
           ]);
 
         setFiles(
@@ -1132,6 +1301,83 @@ function useDrive() {
     }
   }
 
+  async function handleRenameFile(
+    fileId,
+    name,
+    folderId = null
+  ) {
+    setError("");
+
+    try {
+      await renameFile(fileId, name);
+      await load(folderId);
+    } catch (err) {
+      setError(
+        err.message ||
+          "파일 이름 변경에 실패했습니다."
+      );
+    }
+  }
+
+  async function handleRenameFolder(
+    folderId,
+    name,
+    parentFolderId = null
+  ) {
+    setError("");
+
+    try {
+      await renameFolder(folderId, name);
+      await load(parentFolderId);
+    } catch (err) {
+      setError(
+        err.message ||
+          "폴더 이름 변경에 실패했습니다."
+      );
+    }
+  }
+
+  async function handleMoveFile(
+    fileId,
+    folderId,
+    currentFolderId = null
+  ) {
+    setError("");
+
+    try {
+      await moveFile(fileId, folderId);
+      await load(currentFolderId);
+    } catch (err) {
+      setError(
+        err.message ||
+          "파일 이동에 실패했습니다."
+      );
+    }
+  }
+
+  async function handleDownload(file) {
+    setError("");
+
+    try {
+      const response = await downloadFile(file.id);
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+
+      link.href = url;
+      link.download = file.name;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(
+        err.message ||
+          "파일 다운로드에 실패했습니다."
+      );
+    }
+  }
+
   async function handleDeleteFile(
     file,
     folderId = null
@@ -1186,7 +1432,11 @@ function useDrive() {
     error,
     load,
     handleUpload,
+    handleDownload,
     handleCreateFolder,
+    handleRenameFile,
+    handleRenameFolder,
+    handleMoveFile,
     handleDeleteFile,
     handleDeleteFolder,
   };
@@ -1195,9 +1445,9 @@ function useDrive() {
 export default useDrive;
 ```
 
-> `getFolders(query)`가 실제 Backend에서 `parentId`를 지원하지 않으면
-> 해당 API에 맞게 수정한다. **현재 Controller가 지원하는 방식이
-> 기준이다.**
+> `getFiles(folderId)`는 `?folderId=`, `getFolders(folderId)`는
+> `?parentFolderId=`로 변환해서 보낸다(13/14절). Query 문자열을 Hook에서
+> 직접 만들지 않는다. **현재 Controller가 지원하는 방식이 기준이다.**
 
 ------------------------------------------------------------------------
 
@@ -1208,6 +1458,10 @@ export default useDrive;
 ``` text
 frontend/src/App.jsx
 ```
+
+> 이 파일은 `RenameModal`(51절)과 `MoveModal`(53절)을 import한다. 두 파일이
+> 없으면 Vite가 `Failed to resolve import` 오류를 낸다. **51절, 53절의 파일을
+> 먼저 만든 뒤** 이 파일을 저장한다.
 
 ``` jsx
 import {
@@ -1224,6 +1478,8 @@ import FolderRow from "./components/FolderRow";
 import Loading from "./components/Loading";
 import ErrorMessage from "./components/ErrorMessage";
 import CreateFolderModal from "./components/CreateFolderModal";
+import RenameModal from "./components/RenameModal";
+import MoveModal from "./components/MoveModal";
 
 import useDrive from "./hooks/useDrive";
 
@@ -1238,7 +1494,11 @@ function App() {
     error,
     load,
     handleUpload,
+    handleDownload,
     handleCreateFolder,
+    handleRenameFile,
+    handleRenameFolder,
+    handleMoveFile,
     handleDeleteFile,
     handleDeleteFolder,
   } = useDrive();
@@ -1259,6 +1519,12 @@ function App() {
     setFolderModalOpen,
   ] = useState(false);
 
+  const [renameTarget, setRenameTarget] =
+    useState(null);
+
+  const [moveTarget, setMoveTarget] =
+    useState(null);
+
   useEffect(() => {
     load(currentFolderId);
   }, [currentFolderId, load]);
@@ -1270,6 +1536,34 @@ function App() {
     );
 
     setFolderModalOpen(false);
+  }
+
+  async function renameItem(item, name) {
+    if (renameTarget.type === "file") {
+      await handleRenameFile(
+        item.id,
+        name,
+        currentFolderId
+      );
+    } else {
+      await handleRenameFolder(
+        item.id,
+        name,
+        currentFolderId
+      );
+    }
+
+    setRenameTarget(null);
+  }
+
+  async function moveItem(folder) {
+    await handleMoveFile(
+      moveTarget.id,
+      folder ? folder.id : null,
+      currentFolderId
+    );
+
+    setMoveTarget(null);
   }
 
   function openFolder(folder) {
@@ -1359,6 +1653,12 @@ function App() {
                   key={`folder-${folder.id}`}
                   folder={folder}
                   onOpen={openFolder}
+                  onRename={(item) =>
+                    setRenameTarget({
+                      type: "folder",
+                      item,
+                    })
+                  }
                   onDelete={(item) =>
                     handleDeleteFolder(
                       item,
@@ -1372,6 +1672,14 @@ function App() {
                 <FileRow
                   key={`file-${file.id}`}
                   file={file}
+                  onDownload={handleDownload}
+                  onRename={(item) =>
+                    setRenameTarget({
+                      type: "file",
+                      item,
+                    })
+                  }
+                  onMove={setMoveTarget}
                   onDelete={(item) =>
                     handleDeleteFile(
                       item,
@@ -1398,6 +1706,23 @@ function App() {
           setFolderModalOpen(false)
         }
         onCreate={createFolder}
+      />
+
+      <RenameModal
+        key={renameTarget
+          ? `${renameTarget.type}-${renameTarget.item.id}`
+          : "rename-modal"}
+        open={Boolean(renameTarget)}
+        item={renameTarget?.item}
+        onClose={() => setRenameTarget(null)}
+        onRename={renameItem}
+      />
+
+      <MoveModal
+        open={Boolean(moveTarget)}
+        folders={folders}
+        onClose={() => setMoveTarget(null)}
+        onMove={moveItem}
       />
     </div>
   );
@@ -1431,6 +1756,12 @@ uploading
 
 error
 → API 오류
+
+renameTarget
+→ 이름 변경 대상 { type: "file" | "folder", item }
+
+moveTarget
+→ 이동할 파일
 ```
 
 ------------------------------------------------------------------------
@@ -1568,7 +1899,18 @@ button {
   padding: 0 16px;
   border: 1px solid #d1d5db;
   border-radius: 8px;
-  background: white;
+  color: #111827;
+  background: #ffffff;
+}
+
+.secondary-button {
+  cursor: pointer;
+}
+
+.secondary-button.is-uploading {
+  color: #6b7280;
+  background: #f3f4f6;
+  cursor: wait;
 }
 
 .primary-button:hover,
@@ -1698,6 +2040,10 @@ button {
 frontend/src/index.css
 ```
 
+Vite 템플릿이 만든 기존 내용(`#root { width: 1126px; text-align: center; ... }`,
+다크 모드 색상 등)을 **모두 지우고** 다음으로 교체한다. 템플릿 내용을 그대로
+두면 화면이 가운데 좁은 폭으로 정렬되고, 다크 모드에서 글자색이 흐려진다.
+
 ``` css
 html,
 body,
@@ -1768,9 +2114,17 @@ CORS policy
 
 오류를 확인한다.
 
+> Codespaces 브라우저에서 Frontend 주소는 `localhost:5173`이 아니라
+> `https://<codespace이름>-5173.app.github.dev` 형태다. 따라서 Origin은 항상
+> Backend와 다르다.
+>
+> **현재 저장소는 Backend에 CORS 설정을 추가하지 않고 34절의 Vite Proxy를
+> 사용한다.** 브라우저는 같은 Origin(5173)의 `/api`로만 요청하므로 CORS
+> 오류가 발생하지 않는다. 33절은 Proxy를 쓰지 않는 경우의 대안이다.
+
 ------------------------------------------------------------------------
 
-# 33. Backend에 CORS가 없을 때
+# 33. Backend에 CORS가 없을 때 (선택 --- Proxy를 쓰지 않는 경우)
 
 현재 프로젝트의 Java 최상위 package 아래:
 
@@ -1781,7 +2135,7 @@ config/CorsConfig.java
 를 만든다.
 
 ``` java
-package 실제_프로젝트_패키지.config;
+package com.example.backend.config;
 
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.servlet.config.annotation.CorsRegistry;
@@ -1811,8 +2165,13 @@ public class CorsConfig implements WebMvcConfigurer {
 }
 ```
 
-`실제_프로젝트_패키지`는 현재 `CloudFileServiceApplication.java`의
-package로 바꾼다.
+위치: `backend/src/main/java/com/example/backend/config/CorsConfig.java`
+(`BackendApplication.java`의 package가 `com.example.backend`이다).
+
+> Codespaces 브라우저에서 접속한다면 `allowedOrigins`에
+> `https://<codespace이름>-5173.app.github.dev`도 추가해야 한다.
+> 또한 Backend 8080 포트를 브라우저에서 직접 열어야 하므로(Ports 탭에서
+> Public 설정 필요) 초보자에게는 34절 Proxy 방식을 권장한다.
 
 ------------------------------------------------------------------------
 
@@ -1824,25 +2183,36 @@ package로 바꾼다.
 frontend/vite.config.js
 ```
 
+현재 저장소 기준(Proxy 대상 주소를 `.env.local`의 `VITE_API_TARGET`에서 읽는다):
+
 ``` javascript
-import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { defineConfig, loadEnv } from "vite";
 
-export default defineConfig({
-  plugins: [react()],
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, ".", "");
 
-  server: {
-    host: "0.0.0.0",
-
-    proxy: {
-      "/api": {
-        target: "http://localhost:8080",
-        changeOrigin: true,
+  return {
+    plugins: [react()],
+    server: {
+      proxy: {
+        "/api": {
+          target: env.VITE_API_TARGET,
+          changeOrigin: true,
+        },
       },
     },
-  },
+  };
 });
 ```
+
+> `VITE_API_TARGET`이 비어 있으면 Proxy 대상이 없어 `/api` 요청이 실패한다.
+> 10절처럼 `.env.local`에 반드시 넣는다. 일회성으로는
+> `VITE_API_TARGET=http://localhost:8080 npm run dev -- --host 0.0.0.0`처럼
+> 실행해도 된다. `host`는 설정 파일 대신 `--host 0.0.0.0` 옵션으로 지정한다.
+>
+> Proxy는 Codespace 내부(Vite 서버)에서 Backend로 요청하므로
+> **Ports 탭에서 5173만 브라우저로 열면 된다.** 8080을 Public으로 열 필요가 없다.
 
 이 방식이면 개발 중:
 
@@ -1864,29 +2234,46 @@ Spring Boot
 
 ``` env
 VITE_API_BASE_URL=
+VITE_API_TARGET=http://localhost:8080
 ```
 
-로 둘 수 있다.
+로 둔다(`VITE_API_BASE_URL`에 주소를 넣으면 Proxy를 거치지 않고 브라우저가
+직접 요청하므로 CORS 문제가 다시 생긴다).
 
 ------------------------------------------------------------------------
 
 # 35. 가장 먼저 연결할 기능 --- 목록
 
+로컬 PostgreSQL을 먼저 실행(프로젝트 루트):
+
+``` bash
+docker compose up -d postgres
+```
+
 Backend를 실행:
 
 ``` bash
 cd backend
+export AWS_REGION=ap-northeast-2
+export S3_BUCKET=$(cd ../infra/terraform && terraform output -raw s3_bucket_name)
 ./gradlew bootRun
 ```
 
-Frontend를 다른 터미널에서:
+> `bootRun`은 기본값 `jdbc:postgresql://localhost:5432/cloud_file`
+> (`cloud_user`/`cloud_password`)로 접속한다. 업로드/다운로드는 실제 S3를
+> 사용하므로 Codespace에 AWS 자격 증명(`aws sts get-caller-identity`로 확인)과
+> `S3_BUCKET`이 있어야 한다. ECS Backend에 붙일 때는 로컬 Backend 대신
+> `.env.local`의 `VITE_API_TARGET`을 ECS Public IP로 바꾼다.
+
+Frontend를 다른 터미널에서(프로젝트 루트 기준):
 
 ``` bash
 cd frontend
 npm run dev -- --host 0.0.0.0
 ```
 
-브라우저를 열고 파일 목록 요청을 확인한다.
+VS Code **Ports** 탭에서 5173의 🌐(Open in Browser)를 눌러 열고 파일 목록
+요청을 확인한다.
 
 ------------------------------------------------------------------------
 
@@ -2013,6 +2400,10 @@ parentFolderId
 
 라면 그 이름을 사용한다.
 
+> 현재 `FileController.upload`는 `@RequestParam("file")`,
+> `@RequestParam(required = false) Long folderId`이므로 `file`, `folderId`가
+> 맞다. 최대 크기는 `application.properties`의 10MB이며, 초과하면 오류가 난다.
+
 ------------------------------------------------------------------------
 
 # 42. 업로드 흐름
@@ -2043,40 +2434,46 @@ Spring Boot
 GET /api/files/{id}/download
 ```
 
-이고 Binary Response라면:
+이고 Binary Response라면(현재 저장소가 이 경우다):
+
+`fileApi.js`(13절):
 
 ``` javascript
-export async function downloadFile(id) {
-  const response = await fetch(
-    `/api/files/${id}/download`
-  );
-
-  if (!response.ok) {
-    throw new Error(
-      "다운로드에 실패했습니다."
-    );
-  }
-
-  const blob = await response.blob();
-
-  const url =
-    URL.createObjectURL(blob);
-
-  const anchor =
-    document.createElement("a");
-
-  anchor.href = url;
-  anchor.download = "download";
-
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-
-  URL.revokeObjectURL(url);
+export function downloadFile(id) {
+  return request(`/api/files/${id}/download`);
 }
 ```
 
-실제 경로와 파일명 응답 방식에 맞춘다.
+`useDrive.js`(26절)의 `handleDownload`:
+
+``` javascript
+async function handleDownload(file) {
+  setError("");
+
+  try {
+    const response = await downloadFile(file.id);
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+
+    link.href = url;
+    link.download = file.name;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    setError(
+      err.message ||
+        "파일 다운로드에 실패했습니다."
+    );
+  }
+}
+```
+
+실제 경로와 파일명 응답 방식에 맞춘다. `request()`를 거치므로
+`VITE_API_BASE_URL`/Proxy 설정이 목록 조회와 동일하게 적용되고, 파일명은
+목록 응답의 `file.name`을 사용한다.
 
 ------------------------------------------------------------------------
 
@@ -2161,6 +2558,8 @@ RDS
 ```
 
 실제 Folder DTO의 필드 이름을 확인한다.
+(현재: `CreateFolderRequest(name, parentFolderId)` → Body
+`{"name": "문서", "parentFolderId": null}`)
 
 ------------------------------------------------------------------------
 
@@ -2244,6 +2643,14 @@ GET /api/folders/3/children
 
 **Frontend가 API를 결정하지 않는다. Backend Controller가 기준이다.**
 
+현재 저장소의 `FolderController`는:
+
+``` text
+GET /api/folders?parentFolderId=3
+```
+
+이므로 `folderApi.js`의 `getFolders(3)`이 이 Query를 만든다(14절).
+
 ------------------------------------------------------------------------
 
 # 50. 이름 변경
@@ -2264,6 +2671,15 @@ PUT/PATCH
 
 Mapping을 찾는다.
 
+현재 저장소:
+
+``` text
+파일: PATCH /api/files/{id}/rename?name=새이름      (Query Parameter)
+폴더: PATCH /api/folders/{id}   Body {"name": "새이름"}  (JSON)
+```
+
+두 방식이 다르므로 `renameFile`/`renameFolder`(13/14절)를 따로 둔다.
+
 ------------------------------------------------------------------------
 
 # 51. RenameModal
@@ -2275,10 +2691,7 @@ frontend/src/components/RenameModal.jsx
 ```
 
 ``` jsx
-import {
-  useEffect,
-  useState,
-} from "react";
+import { useState } from "react";
 
 function RenameModal({
   open,
@@ -2288,12 +2701,6 @@ function RenameModal({
 }) {
   const [name, setName] =
     useState("");
-
-  useEffect(() => {
-    if (item) {
-      setName(item.name || "");
-    }
-  }, [item]);
 
   if (!open || !item) {
     return null;
@@ -2346,6 +2753,11 @@ function RenameModal({
 export default RenameModal;
 ```
 
+> `useEffect` 안에서 `setName`을 호출하는 방식은 Vite 템플릿의 ESLint
+> (`eslint-plugin-react-hooks` v7)가 `npm run lint`에서 경고/오류로 잡는다.
+> 대신 `App.jsx`(27절)에서 `<RenameModal key={...} />`로 대상이 바뀔 때마다
+> 컴포넌트를 새로 만들어 입력값을 초기화한다.
+
 ------------------------------------------------------------------------
 
 # 52. 이동 기능
@@ -2374,6 +2786,15 @@ Backend Move API
 
 구조를 만든다.
 
+현재 저장소에는 **파일 이동만** 있다.
+
+``` text
+PATCH /api/files/{id}/move?folderId={대상폴더id}
+PATCH /api/files/{id}/move               ← folderId 생략 = 내 드라이브(root)
+```
+
+폴더 이동 API는 없으므로 `FolderRow`에는 이동 버튼을 두지 않는다.
+
 ------------------------------------------------------------------------
 
 # 53. MoveModal
@@ -2400,6 +2821,10 @@ function MoveModal({
       <div className="modal">
         <h2>폴더 선택</h2>
 
+        <button onClick={() => onMove(null)}>
+          📁 내 드라이브
+        </button>
+
         {folders.map((folder) => (
           <button
             key={folder.id}
@@ -2421,6 +2846,10 @@ function MoveModal({
 
 export default MoveModal;
 ```
+
+> `App.jsx`는 `folders`(현재 보고 있는 폴더의 하위 폴더 목록)를 넘긴다.
+> 따라서 이동 대상은 "내 드라이브(root)" 또는 현재 폴더의 하위 폴더다.
+> 다른 위치의 폴더로 옮기려면 전체 폴더 트리 조회가 필요하다(확장 과제).
 
 ------------------------------------------------------------------------
 
@@ -2466,6 +2895,9 @@ const filteredFiles =
 ```
 
 전체 파일 검색은 나중에 Backend Search API로 확장한다.
+
+> 위 코드는 `const [search, setSearch] = useState("");`와 검색 입력창이
+> 있다는 전제의 예시다. 현재 저장소에는 검색 기능이 구현되어 있지 않다(선택 범위).
 
 ------------------------------------------------------------------------
 
@@ -2636,6 +3068,10 @@ npm run preview -- --host 0.0.0.0
 
 Production Build가 정상적으로 열리는지 확인한다.
 
+> Preview는 4173 포트를 사용한다(Ports 탭에서 4173을 연다). `vite preview`는
+> `server.proxy` 설정을 그대로 사용하므로 `.env.local`의 `VITE_API_TARGET`이
+> 있으면 API도 동작한다.
+
 ------------------------------------------------------------------------
 
 # 66. Frontend Dockerfile
@@ -2708,7 +3144,14 @@ docker run --rm   -p 8081:80   cloud-file-frontend:day6
 http://localhost:8081
 ```
 
-확인한다.
+확인한다. (Codespaces에서는 Ports 탭에서 8081을 연다.)
+
+> 이 컨테이너는 `dist/` 정적 파일만 Nginx로 제공한다. `.env.local`은
+> `.dockerignore`로 제외되고 Nginx에는 `/api` Proxy가 없으므로, 화면은 뜨지만
+> 목록 요청 `/api/...`은 404/405가 된다. **Day 6에서는 UI 표시와 Docker Build
+> 성공까지만 확인**한다. 컨테이너에서 API까지 연결하려면 Nginx에 `/api`
+> reverse proxy를 추가하거나, Build 시 `VITE_API_BASE_URL`(ALB 등 고정 주소)과
+> Backend CORS를 함께 설정해야 한다(73~77절).
 
 ------------------------------------------------------------------------
 
@@ -2718,7 +3161,8 @@ http://localhost:8081
 VITE_API_BASE_URL
 ```
 
-은 Build Time에 Frontend JavaScript에 들어간다.
+은 Build Time에 Frontend JavaScript에 들어간다. (`VITE_API_TARGET`은
+`vite.config.js`에서만 쓰이는 개발 서버 설정이라 번들에 들어가지 않는다.)
 
 즉:
 
@@ -2965,7 +3409,7 @@ API 연결:
 
 ``` bash
 git add frontend
-git add backend
+git add backend   # 33절 CorsConfig를 추가한 경우에만 변경분이 있다
 git commit -m "feat: connect frontend to file api"
 ```
 
@@ -3112,12 +3556,16 @@ Network
 확인:
 
 ``` text
-VITE_API_BASE_URL
+VITE_API_BASE_URL (Proxy 사용 시 빈 값)
+VITE_API_TARGET (.env.local 수정 후 npm run dev 재시작)
 Backend 실행
 Port
 CORS
 Vite Proxy
 ```
+
+> Vite Proxy가 Backend에 연결하지 못하면 브라우저에는 500/502가 보이고,
+> `npm run dev` 터미널에 `http proxy error ... ECONNREFUSED`가 출력된다.
 
 ------------------------------------------------------------------------
 
@@ -3155,8 +3603,8 @@ Request Body와 필드 비교:
 
 ``` text
 name
-folderId
-parentId
+folderId        (파일 업로드/목록/이동)
+parentFolderId  (폴더 생성/목록)
 file
 ```
 

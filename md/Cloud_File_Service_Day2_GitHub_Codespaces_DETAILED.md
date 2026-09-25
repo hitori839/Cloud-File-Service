@@ -4,7 +4,9 @@
 
 > 참고: 로컬 Docker 실습은 유지되지만, 현재 실제 배포 환경은 AWS ECR/ECS와 S3를 포함하는 경로를 기준으로 진행한다. Container 내부에서 DB 주소는 `localhost`가 아니라 실제 서비스 주소를 사용해야 한다.
 
-> **현재 구현 기준:** 현재 Compose 서비스명은 `cloud-file-service`이며 backend 컨테이너 포트는 `18080:8080`, Nginx 진입점은 `80:80`이다. PostgreSQL은 `postgres` 서비스로 실행되며, 현재 Nginx 설정은 `/api` 요청을 `host.docker.internal:18080`으로 전달한다. 이 문서의 초기 `backend:8080` 예제는 개념 설명으로만 읽고 실제 실행은 루트 `README.md`와 `docker-compose.yml`을 기준으로 한다.
+> **현재 구현 기준:** 현재 Compose 서비스명은 `cloud-file-service`이며 backend 컨테이너 포트는 `18080:8080`, Nginx 진입점은 `80:80`이다. PostgreSQL은 `postgres` 서비스로 실행되며, 현재 Nginx 설정(`nginx/nginx.conf`)은 `location /`의 모든 요청을 `upstream backend { server host.docker.internal:18080; }`으로 전달한다(Compose의 `extra_hosts: host.docker.internal:host-gateway` 필요). 이 문서의 Day 2 시점 예제(서비스명 `backend`, `cloud-file-service:8080` upstream, In-Memory JSON API)는 학습 단계의 초기 버전이며, Day 3.5에서 PostgreSQL을 추가하며 현재 형태로 바뀐다. 최종 실행은 루트 `README.md`와 `docker-compose.yml`을 기준으로 한다.
+>
+> **Java 버전:** 현재 `backend/build.gradle`의 toolchain은 **Java 25**이고 루트 `Dockerfile`도 `eclipse-temurin:25-jdk`/`25-jre`를 사용한다. 이 문서의 Dockerfile 예제도 25를 기준으로 한다. (JAR을 Java 25로 컴파일했는데 21 JRE Image에서 실행하면 `UnsupportedClassVersionError`로 즉시 종료된다.)
 
 > **개인정보 보호:** 예시에는 실제 사용자 정보, AWS 계정 정보, credential 또는 비밀번호를 넣지 않는다.
 
@@ -317,11 +319,22 @@ Build:
 
 성공해야 Day 2를 진행한다.
 
+> **참고:** Day 1 시점(In-Memory) 코드는 DB 없이 테스트가 통과한다. 이미 Day 3.5 이후의 JPA/PostgreSQL 코드로 이 문서를 다시 따라가는 경우에는 `./gradlew test`/`build`와 JAR 실행 전에 PostgreSQL(`localhost:5432/cloud_file`)이 실행 중이어야 한다.
+
 JAR 확인:
 
 ```bash
 ls -la build/libs
 ```
+
+보통 JAR이 **두 개** 생긴다.
+
+```text
+backend-0.0.1-SNAPSHOT-plain.jar   ← 의존성이 없는 plain JAR (실행 불가)
+backend-0.0.1-SNAPSHOT.jar         ← Spring Boot 실행 JAR (이것을 사용)
+```
+
+파일 이름은 `settings.gradle`의 `rootProject.name`과 `build.gradle`의 `version`에 따라 달라질 수 있다. 항상 `-plain`이 **없는** JAR을 실행한다.
 
 ---
 
@@ -330,8 +343,10 @@ ls -la build/libs
 Docker 이전에 애플리케이션 자체를 확인한다.
 
 ```bash
-java -jar build/libs/*.jar
+java -jar build/libs/backend-0.0.1-SNAPSHOT.jar
 ```
+
+> `java -jar build/libs/*.jar`는 JAR이 두 개일 때 `-plain.jar`가 먼저 선택되어 `no main manifest attribute` 오류가 날 수 있으므로 쓰지 않는다.
 
 새 터미널에서:
 
@@ -359,6 +374,8 @@ JAR 실행 성공
 
 처럼 원인을 분리할 수 있기 때문이다.
 
+확인이 끝나면 JAR을 실행한 터미널에서 `Ctrl + C`로 **반드시 종료**한다. 종료하지 않으면 18번의 `docker run -p 8080:8080`이 `port is already allocated` 오류로 실패한다.
+
 ---
 
 # 9. 프로젝트 구조
@@ -370,16 +387,18 @@ cloud-file-service/
 ├── backend/
 ├── nginx/
 │   └── nginx.conf
-├── terraform/
-├── k8s/
-├── observability/
-├── docs/
+├── infra/            # (Day 4~5) ECS task definition, infra/terraform/
+├── k8s/              # (Day 7)
+├── frontend/         # (Day 6)
+├── docs/             # (선택) 학습 기록
 ├── Dockerfile
 ├── docker-compose.yml
 ├── .dockerignore
 ├── .gitignore
 └── README.md
 ```
+
+> `infra/`, `k8s/`, `frontend/`는 이후 Day에서 만들어지므로 지금은 없어도 된다. Terraform은 루트 `terraform/`이 아니라 `infra/terraform/`에 위치한다.
 
 오늘은 주로:
 
@@ -435,16 +454,20 @@ Dockerfile
 을 만든다.
 
 ```dockerfile
-FROM eclipse-temurin:21-jre
+FROM eclipse-temurin:25-jre
 
 WORKDIR /app
 
-COPY backend/build/libs/*.jar app.jar
+COPY backend/build/libs/*-SNAPSHOT.jar app.jar
 
 EXPOSE 8080
 
 ENTRYPOINT ["java", "-jar", "app.jar"]
 ```
+
+> `COPY backend/build/libs/*.jar app.jar`로 쓰면 `-plain.jar`까지 두 파일이 매칭되어 `When using COPY with more than one source file, the destination must be a directory` 오류가 난다. 그래서 실행 JAR만 매칭되도록 `*-SNAPSHOT.jar`를 사용한다(version이 다르면 실제 실행 JAR 이름에 맞춘다).
+>
+> 이 첫 Dockerfile은 **호스트에서 미리 Build한 JAR**을 복사하므로, 7번의 `./gradlew clean build`를 먼저 해야 한다. 나중에 67번 Multi-stage Dockerfile로 교체하며, 최종 저장소의 루트 `Dockerfile`은 Multi-stage 버전이다.
 
 ---
 
@@ -453,10 +476,10 @@ ENTRYPOINT ["java", "-jar", "app.jar"]
 ## FROM
 
 ```dockerfile
-FROM eclipse-temurin:21-jre
+FROM eclipse-temurin:25-jre
 ```
 
-Java Runtime이 포함된 기반 Image를 사용한다.
+Java Runtime이 포함된 기반 Image를 사용한다. 버전은 `build.gradle`의 toolchain(`JavaLanguageVersion.of(25)`)과 같거나 높아야 한다.
 
 ## WORKDIR
 
@@ -469,10 +492,10 @@ Container 내부 작업 디렉터리를 `/app`으로 지정한다.
 ## COPY
 
 ```dockerfile
-COPY backend/build/libs/*.jar app.jar
+COPY backend/build/libs/*-SNAPSHOT.jar app.jar
 ```
 
-호스트의 JAR을 Container의 `/app/app.jar`로 복사한다.
+호스트의 실행 JAR을 Container의 `/app/app.jar`로 복사한다.
 
 ## EXPOSE
 
@@ -695,6 +718,8 @@ curl -i -X POST   http://localhost:8080/api/files   -H "Content-Type: applicatio
     "size": 100
   }'
 ```
+
+> 이 JSON 요청은 Day 1의 In-Memory metadata API 기준이다. Day 3 이후 현재 코드는 `multipart/form-data`(`-F "file=@test.txt"`)로 업로드하므로, 최종 코드로 실습 중이라면 `curl -i -X POST http://localhost:8080/api/files -F "file=@test.txt"` 형태를 사용한다.
 
 목록:
 
@@ -1346,6 +1371,10 @@ networks:
     driver: bridge
 ```
 
+> **서비스 이름 vs Container 이름:** 여기서 Compose **서비스 이름**은 `backend`이고, `container_name`은 `cloud-file-service`이다. `docker compose logs/stop/start/exec` 명령에는 **서비스 이름**(`backend`, `nginx`)을 쓴다. Nginx의 `server cloud-file-service:8080;`은 container_name으로, `backend:8080`은 서비스 이름으로 둘 다 Docker DNS에서 찾을 수 있다.
+>
+> **최종 저장소와의 차이:** Day 3.5 이후 현재 `docker-compose.yml`은 서비스명이 `cloud-file-service`(container_name 없음), 포트 `18080:8080`, `postgres` 서비스와 DB/S3 환경변수(`DB_URL`, `DB_USERNAME`, `DB_PASSWORD`, `SPRING_DATASOURCE_*`, `AWS_REGION`, `S3_BUCKET`), `extra_hosts: host.docker.internal:host-gateway`를 가진다. 그에 맞춰 `nginx/nginx.conf`의 upstream도 `server host.docker.internal:18080;`으로 바뀐다. 오늘은 위의 Day 2 버전으로 실습한다.
+
 ---
 
 # 48. Compose `services`
@@ -1480,7 +1509,14 @@ Compose가 서비스 시작 관계를 표현하도록 한다.
 
 # 53. Compose 실행
 
-기존 Container 제거:
+먼저 28번/40번에서 `docker run`으로 직접 만든 Container와 Network를 제거한다. `docker compose down`은 Compose가 만든 것만 지우므로, 이것을 하지 않으면 `container name "/cloud-file-service" is already in use` 또는 `port is already allocated`(80) 오류가 난다.
+
+```bash
+docker rm -f cloud-file-service nginx
+docker network rm cloud-network
+```
+
+기존 Compose Container 제거:
 
 ```bash
 docker compose down
@@ -1514,10 +1550,16 @@ docker compose ps
 docker compose logs
 ```
 
-Backend:
+Backend (서비스 이름 `backend` 사용):
 
 ```bash
-docker compose logs cloud-file-service
+docker compose logs backend
+```
+
+또는 container_name으로:
+
+```bash
+docker logs cloud-file-service
 ```
 
 Nginx:
@@ -1678,7 +1720,13 @@ Nginx
 Backend
 ```
 
-docker compose logs cloud-file-service
+에서 Nginx 뒤의 Backend가 없으므로 Nginx가 `502 Bad Gateway`(또는 `504`) 같은 오류를 반환하기 때문이다.
+
+Nginx 로그에서 원인을 확인한다.
+
+```bash
+docker compose logs nginx
+```
 
 ---
 
@@ -1750,7 +1798,12 @@ docker compose restart nginx
 curl -i http://localhost/health
 ```
 
-실패를 확인한다.
+실패를 확인한다. Nginx는 시작할 때 upstream 이름을 찾지 못하면 `host not found in upstream` 오류로 **Container 자체가 종료**된다.
+
+```bash
+docker compose ps
+docker compose logs nginx
+```
 
 다시:
 
@@ -1758,7 +1811,17 @@ curl -i http://localhost/health
 server cloud-file-service:8080;
 ```
 
-으로 복구한다.
+으로 복구하고 Nginx를 다시 시작한다.
+
+```bash
+docker compose up -d --force-recreate nginx
+```
+
+```bash
+curl -i http://localhost/health
+```
+
+가 다시 성공해야 한다. (단일 파일 bind mount는 편집기에 따라 변경이 반영되지 않을 수 있으므로 `restart` 대신 `--force-recreate`를 사용한다.)
 
 ---
 
@@ -1823,10 +1886,10 @@ Docker Build
 
 # 67. Multi-stage Dockerfile
 
-Dockerfile을 다음처럼 만들 수 있다.
+루트 `Dockerfile`을 다음 내용으로 **교체**한다. (최종 저장소의 루트 `Dockerfile`과 같은 내용이다.)
 
 ```dockerfile
-FROM eclipse-temurin:21-jdk AS builder
+FROM eclipse-temurin:25-jdk AS builder
 
 WORKDIR /workspace
 
@@ -1843,16 +1906,18 @@ COPY backend/src backend/src
 RUN cd backend && ./gradlew clean bootJar --no-daemon
 
 
-FROM eclipse-temurin:21-jre
+FROM eclipse-temurin:25-jre
 
 WORKDIR /app
 
-COPY --from=builder     /workspace/backend/build/libs/*.jar     app.jar
+COPY --from=builder /workspace/backend/build/libs/*.jar app.jar
 
 EXPOSE 8080
 
 ENTRYPOINT ["java", "-jar", "app.jar"]
 ```
+
+> 여기서는 `build`가 아니라 `bootJar`만 실행하므로 `-plain.jar`가 만들어지지 않고 테스트도 실행되지 않는다. 그래서 `*.jar`가 실행 JAR 하나만 매칭되며, Image Build 중에 DB 같은 외부 의존성이 필요 없다. 이후 `docker compose build`도 이 Dockerfile을 사용한다.
 
 ---
 
@@ -1978,6 +2043,10 @@ observability
 *.pem
 ```
 
+> **주의:** `**/build`를 제외하므로, 호스트의 `backend/build/libs/*.jar`를 복사하는 11번의 첫 Dockerfile은 이제 `COPY failed`로 실패한다. 반드시 67번 Multi-stage Dockerfile로 교체한 뒤 사용한다.
+>
+> 최종 저장소의 `.dockerignore`에는 이후 Day를 거치며 `.env.*`, `*.key`, `*.crt`, `keys.txt`, `backend/bin`, `infra/terraform/*.tfstate` 등이 추가되어 있다.
+
 ---
 
 # 73. `.dockerignore`의 목적
@@ -2056,6 +2125,8 @@ prod
 ```
 
 설정을 분리할 수 있다.
+
+> 위 `SPRING_PROFILES_ACTIVE`는 개념 예시다(현재 프로젝트에는 `docker` profile 파일이 없다). 실제 프로젝트는 `backend/src/main/resources/application.properties`에서 `DB_URL`/`DB_USERNAME`/`DB_PASSWORD`(또는 `SPRING_DATASOURCE_*`), `AWS_REGION`, `S3_BUCKET` 환경변수를 읽는다. 같은 폴더의 `application.yml`에 있는 `AWS_S3_BUCKET`, `cloud.aws.*` 키는 코드에서 사용하지 않는 레거시 설정이므로 환경변수 이름은 `S3_BUCKET`을 사용한다.
 
 ---
 
@@ -2229,7 +2300,7 @@ Spring Boot Container
 
 # 81. 이것이 Kubernetes와 연결되는 이유
 
-Day 6:
+Day 7:
 
 ```text
 Docker Image
@@ -2339,8 +2410,8 @@ curl http://localhost/api/files
 3. Nginx Container의 80번 Port
 4. Nginx `location /`
 5. `proxy_pass http://backend`
-6. Docker DNS로 `backend` 찾기
-7. Backend Container의 8080
+6. `upstream backend`에 적힌 `cloud-file-service`를 Docker DNS로 찾기
+7. Backend Container(`cloud-file-service`)의 8080
 8. Spring Boot
 9. `FileController`
 10. `FileMetadataService`
@@ -2620,7 +2691,7 @@ docker compose logs nginx
 ```
 
 ```bash
-docker compose logs cloud-file-service
+docker compose logs backend
 ```
 
 ```bash
@@ -2699,7 +2770,7 @@ AWS S3
 
 로 발전한다.
 
-실제 파일을 S3에 저장한다.
+실제 파일을 S3에 저장한다. 이어서 Day 3.5에서 metadata를 PostgreSQL에 저장하도록 바꾸면서 `docker-compose.yml`(서비스명 `cloud-file-service`, `18080:8080`, `postgres` 서비스)과 `nginx/nginx.conf`(upstream `host.docker.internal:18080`)가 현재 저장소 형태로 바뀐다.
 
 ---
 
@@ -2764,7 +2835,7 @@ S3
 AWS Console에서 만든 인프라를 이해한 다음:
 
 ```text
-Terraform
+Terraform (infra/terraform/)
     ↓
 VPC
 Subnet
@@ -2772,8 +2843,10 @@ Security Group
 IAM
 S3
 ECR
+RDS (PostgreSQL)
+Secrets Manager
+CloudWatch Logs
 ECS
-Load Balancer
 ```
 
 를 코드로 정의한다.
@@ -2784,10 +2857,26 @@ Load Balancer
 
 # 97. Day 5 → Day 6
 
+Day 6에서는 React + Vite로 Google Drive 스타일 Frontend(`frontend/`)를 만들고 Backend API와 연결한다.
+
+```text
+Browser
+    ↓
+React Frontend
+    ↓
+Spring Boot API
+    ↓
+PostgreSQL(RDS) + S3
+```
+
+---
+
+# 98. Day 6 → Day 7
+
 같은 Container Image를:
 
 ```text
-Kubernetes
+Kubernetes (kind / EKS)
     ↓
 Deployment
     ↓
@@ -2801,46 +2890,30 @@ Service
 그리고:
 
 ```text
+Namespace
 ConfigMap
 Secret
 Readiness Probe
 Liveness Probe
+GitHub Actions CI/CD
+Rollout / Rollback
 ```
 
 를 학습한다.
 
 ---
 
-# 98. Day 6 Observability
+# 99. Day 7 선택 기능 — Observability / GitOps
 
-Application:
+Day 7의 선택 기능으로 다음을 추가할 수 있다.
 
 ```text
 Spring Boot
      ↓
-OpenTelemetry
-     ↓
-Telemetry
+Prometheus / OpenTelemetry
      ↓
 Grafana
 ```
-
-구조를 만든다.
-
-다음과 같은 정보를 관찰한다.
-
-```text
-Request Rate
-Error Rate
-Latency
-Trace
-```
-
----
-
-# 99. Day 7 GitOps
-
-최종:
 
 ```text
 Developer
@@ -2852,21 +2925,7 @@ Argo CD
 Kubernetes
 ```
 
-구조를 만든다.
-
-코드/Manifest 변경:
-
-```text
-Git Commit
-    ↓
-Git Push
-    ↓
-Argo CD
-    ↓
-Cluster Sync
-```
-
-를 직접 확인한다.
+필수 경로(kind/EKS 배포, CI/CD)를 먼저 끝낸 뒤 진행한다.
 
 ---
 
@@ -3010,10 +3069,10 @@ AWS S3 Integration
 git status
 ```
 
-확인한다.
+확인한다. `.env`, `*.pem`, AWS credential 파일이 목록에 보이면 절대 add하지 않는다(`.gitignore`에 추가). `backend/build/`는 `.gitignore`의 `build/`로 제외되어야 한다.
 
 ```bash
-git add .
+git add Dockerfile docker-compose.yml .dockerignore nginx/nginx.conf docs/day2.md
 ```
 
 Commit:
@@ -3038,6 +3097,8 @@ nginx/nginx.conf
 docs/day2.md
 ```
 
+> `docs/day2.md`는 선택 사항이다(현재 저장소에는 `docs/` 폴더가 없다). 만들지 않았다면 `git add`에서 빼면 된다.
+
 ---
 
 # 102. 최종 Git 구조
@@ -3055,13 +3116,7 @@ cloud-file-service/
 ├── nginx/
 │   └── nginx.conf
 │
-├── terraform/
-│
-├── k8s/
-│
-├── observability/
-│
-├── docs/
+├── docs/            # (선택) 학습 기록
 │   ├── day1.md
 │   └── day2.md
 │
@@ -3071,6 +3126,8 @@ cloud-file-service/
 ├── .gitignore
 └── README.md
 ```
+
+> 이후 Day에서 `frontend/`(Day 6), `infra/`·`infra/terraform/`(Day 4~5), `k8s/`(Day 7)가 추가된다.
 
 ---
 
@@ -3113,6 +3170,15 @@ Spring Boot
 S3
 ```
 
+Day 3.5:
+
+```text
+[Day 3.5]
+Spring Boot
+    ↓
+PostgreSQL(metadata) + S3(file)
+```
+
 Day 4:
 
 ```text
@@ -3141,24 +3207,28 @@ Day 6:
 
 ```text
 [Day 6]
-Kubernetes
-    ↓
-Pods
+React Frontend
     ↓
 Spring Boot
     ↓
-S3
+RDS + S3
 ```
 
 Day 7:
 
 ```text
 [Day 7]
-GitHub
+GitHub Actions
     ↓
-Argo CD
+ECR
     ↓
-Kubernetes
+Kubernetes (kind / EKS)
+    ↓
+Pods
+    ↓
+Spring Boot
+    ↓
+RDS + S3
 ```
 
 ---

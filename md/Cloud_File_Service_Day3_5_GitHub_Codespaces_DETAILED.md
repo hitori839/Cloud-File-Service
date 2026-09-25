@@ -224,20 +224,22 @@ cloud-file-service/
 │       │   ├── controller/
 │       │   │   ├── FileController.java
 │       │   │   └── FolderController.java       ← 새로 생성
-│       │   ├── dto/                             ← 새로 생성
-│       │   │   ├── CreateFolderRequest.java
-│       │   │   ├── RenameRequest.java
-│       │   │   ├── FileResponse.java
-│       │   │   └── FolderResponse.java
+│       │   ├── dto/                             ← Day 1부터 있음, 파일 추가
+│       │   │   ├── CreateFolderRequest.java     ← 새로 생성
+│       │   │   ├── RenameRequest.java           ← 새로 생성
+│       │   │   ├── FileResponse.java            ← 새로 생성
+│       │   │   └── FolderResponse.java          ← 새로 생성
 │       │   ├── entity/                          ← 새로 생성
 │       │   │   ├── FileEntity.java
 │       │   │   └── FolderEntity.java
-│       │   ├── repository/                      ← 새로 생성
-│       │   │   ├── FileRepository.java
-│       │   │   └── FolderRepository.java
-│       │   ├── service/                         ← 새로 생성
-│       │   │   ├── FileService.java
-│       │   │   └── FolderService.java
+│       │   ├── exception/
+│       │   │   └── GlobalExceptionHandler.java  ← 수정 (400/409 처리 추가)
+│       │   ├── repository/                      ← Day 1부터 있음, 파일 추가
+│       │   │   ├── FileRepository.java          ← 새로 생성
+│       │   │   └── FolderRepository.java        ← 새로 생성
+│       │   ├── service/                         ← Day 1부터 있음, 파일 추가
+│       │   │   ├── FileService.java             ← 새로 생성
+│       │   │   └── FolderService.java           ← 새로 생성
 │       │   └── storage/
 │       │       └── S3StorageService.java
 │       └── resources/
@@ -246,6 +248,11 @@ cloud-file-service/
 ├── docker-compose.yml
 └── .gitignore
 ```
+
+> **Day 1의 In-Memory 클래스는 어떻게 되나?**
+> `domain/FileMetadata.java`, `domain/FileStatus.java`, `dto/CreateFileRequest.java`, `repository/FileMetadataRepository.java`, `repository/InMemoryFileMetadataRepository.java`, `service/FileMetadataService.java`, `exception/FileNotFoundException.java`는 **삭제하지 않고 그대로 둔다.**
+> Day 3.5부터 `FileController`는 더 이상 `FileMetadataService`를 사용하지 않지만, Day 1에서 만든 단위 테스트(`InMemoryFileMetadataRepositoryTest`, `FileMetadataServiceTest`)가 이 클래스들을 참조하므로 지우면 `./gradlew build`가 실패한다. 학습 기록용(legacy)으로 남겨 두는 것이다.
+> 또한 Day 1의 JSON 메타데이터 API(`POST /api/files`에 JSON body)는 Day 3.5부터 **multipart 업로드 API로 대체**된다.
 
 **실제 프로젝트의 패키지명이 다르면 `com.example.backend` 부분을 실제 패키지명으로 바꾼다.**
 
@@ -315,21 +322,25 @@ runtimeOnly 'org.postgresql:postgresql'
 
 AWS S3 dependency는 Day 3에서 추가했다면 그대로 유지한다.
 
-예:
+예 (현재 프로젝트 기준 — Spring Boot 4이므로 web starter 이름이 `spring-boot-starter-webmvc`이고, AWS SDK는 BOM으로 관리한다):
 
 ```gradle
 dependencies {
-    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    implementation 'org.springframework.boot:spring-boot-starter-data-jpa'   // ← 추가
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+    implementation 'org.springframework.boot:spring-boot-starter-webmvc'
+    runtimeOnly 'org.postgresql:postgresql'                                  // ← 추가
 
-    implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
-
+    implementation platform('software.amazon.awssdk:bom:2.36.3')
     implementation 'software.amazon.awssdk:s3'
 
-    runtimeOnly 'org.postgresql:postgresql'
-
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    // ... 기존 test dependency 유지
 }
 ```
+
+프로젝트가 `spring-boot-starter-web`을 쓰고 있다면 그것을 그대로 유지한다. web starter를 바꾸지 말고 **JPA와 PostgreSQL 두 줄만 추가**한다.
 
 **중복 dependency를 추가하지 않는다.**
 
@@ -339,8 +350,10 @@ dependencies {
 
 ```bash
 cd backend
-./gradlew clean build
+./gradlew clean build -x test
 ```
+
+> **왜 `-x test`인가?** `BackendApplicationTests`(`@SpringBootTest`)는 테스트 중에 Spring 전체를 띄운다. JPA dependency를 넣은 순간부터 Spring은 DB 연결을 요구하는데, 아직 PostgreSQL 컨테이너(11~13단계)와 datasource 설정(14단계)이 없으므로 테스트가 `Failed to configure a DataSource` 또는 `Connection refused`로 실패한다. 지금은 dependency 다운로드와 컴파일만 확인하고, 전체 테스트는 PostgreSQL을 켠 뒤 49단계에서 실행한다.
 
 성공:
 
@@ -384,10 +397,20 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cloud_user -d cloud_file"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
 volumes:
   postgres_data:
 ```
+
+주의:
+- Day 2에서 만든 `cloud-file-service`, `nginx` 서비스와 `networks:` 블록은 그대로 둔다. 위 `postgres:` 블록은 기존 `services:` 아래에 **추가**하고, `volumes:`는 파일 맨 아래(최상위)에 추가한다. 이미 `networks: cloud-network`를 쓰고 있다면 postgres에도 `networks: [cloud-network]`를 붙인다 (101단계 참고).
+- `healthcheck`는 backend가 PostgreSQL 준비 완료 후에 시작되도록(`condition: service_healthy`) 하기 위한 것이다.
+- 여기의 `POSTGRES_DB / POSTGRES_USER / POSTGRES_PASSWORD` 값은 14단계 `application.properties`의 기본값(`cloud_file / cloud_user / cloud_password`)과 **반드시 같아야 한다.**
 
 ---
 
@@ -485,22 +508,27 @@ spring.jpa.show-sql=true
 spring.jpa.properties.hibernate.format_sql=true
 ```
 
-최종 예:
+설명:
+- `SPRING_DATASOURCE_URL`이 있으면 그것을, 없으면 `DB_URL`을, 둘 다 없으면 `localhost` 기본값을 사용한다. 이후 Day(ECS/Kubernetes)에서는 이 환경변수 중 하나로 실제 RDS 주소를 주입한다.
+
+최종 예 (현재 프로젝트의 `application.properties`와 동일한 형태):
 
 ```properties
 spring.application.name=backend
+
+server.address=0.0.0.0
 server.port=8080
 
 # AWS
 aws.region=${AWS_REGION:ap-northeast-2}
 
 # S3
-aws.s3.bucket=${S3_BUCKET}
+aws.s3.bucket=${S3_BUCKET:local-cloud-file-service}
 
 # PostgreSQL
-spring.datasource.url=${DB_URL:jdbc:postgresql://localhost:5432/cloud_file}
-spring.datasource.username=${DB_USERNAME:cloud_user}
-spring.datasource.password=${DB_PASSWORD:cloud_password}
+spring.datasource.url=${SPRING_DATASOURCE_URL:${DB_URL:jdbc:postgresql://localhost:5432/cloud_file}}
+spring.datasource.username=${SPRING_DATASOURCE_USERNAME:${DB_USERNAME:cloud_user}}
+spring.datasource.password=${SPRING_DATASOURCE_PASSWORD:${DB_PASSWORD:cloud_password}}
 
 # JPA
 spring.jpa.hibernate.ddl-auto=update
@@ -511,6 +539,10 @@ spring.jpa.properties.hibernate.format_sql=true
 spring.servlet.multipart.max-file-size=10MB
 spring.servlet.multipart.max-request-size=10MB
 ```
+
+> `aws.s3.bucket`에 기본값(`local-cloud-file-service`)을 붙인 이유: 49단계의 `./gradlew clean build`가 테스트 중 Spring을 띄울 때 `S3_BUCKET` 환경변수가 없어도 `Could not resolve placeholder 'S3_BUCKET'`로 실패하지 않게 하기 위해서다. **실제 업로드 테스트 전에는 반드시 `export S3_BUCKET=실제버킷이름`을 설정한다.** (기본값 버킷은 존재하지 않으므로 업로드 시 오류가 난다.)
+
+> **`application.yml`에 대한 주의:** 프로젝트에 `backend/src/main/resources/application.yml`도 있다면 그 안의 `cloud.aws.region`, `cloud.aws.s3.bucket`(`AWS_S3_BUCKET`) 키는 **코드에서 사용하지 않는 예전 설정**이다. `S3Config`와 `S3StorageService`는 `application.properties`의 `aws.region`, `aws.s3.bucket`(환경변수 `AWS_REGION`, `S3_BUCKET`)만 읽는다. 같은 키가 두 파일에 있으면 `.properties`가 우선한다. DB/S3 설정은 **`application.properties` 한 곳에만** 추가하고, 환경변수는 `AWS_S3_BUCKET`이 아니라 `S3_BUCKET`을 사용한다.
 
 ---
 
@@ -1756,7 +1788,8 @@ DB                S3
 
 # 47. FileController 코드
 
-기존 API가 크게 다르지 않다면 다음 구조로 맞춘다.
+Day 3의 `FileController`(S3 key를 직접 받는 `/api/files/{key}` 방식)는 **파일 내용 전체를 아래 코드로 교체**한다.
+교체 후에는 Day 3의 `GET /api/files/{key}`, `DELETE /api/files/{key}` 대신 DB의 파일 ID(`/api/files/{fileId}`)를 사용한다.
 
 ```java
 package com.example.backend.controller;
@@ -1835,9 +1868,9 @@ public class FileController {
                 )
                 .header(
                         HttpHeaders.CONTENT_DISPOSITION,
-                        "attachment; filename=""
+                        "attachment; filename=\""
                                 + fileName
-                                + """
+                                + "\""
                 )
                 .contentLength(data.length)
                 .body(resource);
@@ -1930,7 +1963,65 @@ S3StorageService
 
 ---
 
+# 48-1. GlobalExceptionHandler 수정 (400 / 409 응답)
+
+Service는 잘못된 입력에 `IllegalArgumentException`, 삭제 불가 폴더에 `IllegalStateException`을 던진다.
+Day 1의 `GlobalExceptionHandler`는 `FileNotFoundException`만 처리하므로, 그대로 두면 이 예외들이 **500 Internal Server Error**가 된다.
+
+파일:
+
+```text
+backend/src/main/java/com/example/backend/exception/GlobalExceptionHandler.java
+```
+
+기존 `handleFileNotFound` 메서드 아래(클래스 닫는 `}` 위)에 다음 두 메서드를 추가한다.
+
+```java
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<Map<String, String>>
+    handleBadRequest(
+            IllegalArgumentException exception
+    ) {
+        return ResponseEntity
+                .status(HttpStatus.BAD_REQUEST)
+                .body(
+                        Map.of(
+                                "message",
+                                exception.getMessage()
+                        )
+                );
+    }
+
+    @ExceptionHandler(IllegalStateException.class)
+    public ResponseEntity<Map<String, String>>
+    handleConflict(
+            IllegalStateException exception
+    ) {
+        return ResponseEntity
+                .status(HttpStatus.CONFLICT)
+                .body(
+                        Map.of(
+                                "message",
+                                exception.getMessage()
+                        )
+                );
+    }
+```
+
+import(`HttpStatus`, `ResponseEntity`, `ExceptionHandler`, `Map`)는 Day 1에서 이미 있으므로 추가할 필요가 없다.
+
+결과:
+
+```text
+폴더/파일 없음, 이름 비어 있음 → 400 {"message": "..."}
+파일/하위 폴더가 있는 폴더 삭제 → 409 {"message": "..."}
+```
+
+---
+
 # 49. 컴파일
+
+PostgreSQL 컨테이너(13단계)가 켜져 있는 상태에서 실행한다. 이번에는 테스트까지 포함한다.
 
 ```bash
 cd backend
@@ -1938,6 +2029,8 @@ cd backend
 ```
 
 여기서 오류가 나면 실행하지 말고 먼저 오류를 해결한다.
+
+> `contextLoads` 테스트가 `Connection refused`로 실패하면 PostgreSQL이 꺼져 있는 것이다. `docker compose up -d postgres` 후 다시 실행한다.
 
 ---
 
@@ -1949,7 +2042,15 @@ PostgreSQL이 켜져 있어야 한다.
 docker compose ps
 ```
 
-그리고:
+S3 업로드를 하려면 Day 3처럼 환경변수가 필요하다 (같은 터미널에서):
+
+```bash
+export AWS_REGION=ap-northeast-2
+export S3_BUCKET=YOUR_BUCKET_NAME
+# AWS credential도 Day 3과 같은 방식으로 설정되어 있어야 한다.
+```
+
+그리고 (`backend/` 폴더에서):
 
 ```bash
 ./gradlew bootRun
@@ -2019,6 +2120,9 @@ SELECT * FROM files;
 > **실제로 파일 시스템이 동작하는지**
 
 테스트한다.
+
+`bootRun`이 실행 중인 터미널은 그대로 두고, **새 터미널**을 열어 프로젝트 루트에서 아래 명령을 실행한다.
+새 터미널에서도 `aws s3 ls s3://$S3_BUCKET`를 쓰므로 다시 `export S3_BUCKET=YOUR_BUCKET_NAME`을 해 둔다.
 
 ---
 
@@ -2272,8 +2376,10 @@ diff report.txt downloaded.txt
 # 74. 파일 이름 변경
 
 ```bash
-curl -X PATCH   "http://localhost:8080/api/files/1/rename?name=최종보고서.txt"
+curl -X PATCH -G   "http://localhost:8080/api/files/1/rename"   --data-urlencode "name=최종보고서.txt"
 ```
+
+> 한글 파일명은 URL에 그대로 넣지 않고 `-G --data-urlencode`로 인코딩해서 query string(`?name=...`)으로 보낸다.
 
 다시 조회:
 
@@ -2409,10 +2515,11 @@ curl -X DELETE   http://localhost:8080/api/folders/2
 현재 구현에서는:
 
 ```text
-파일 또는 하위 폴더가 있는 폴더는 삭제할 수 없습니다.
+HTTP 409
+{"message":"파일 또는 하위 폴더가 있는 폴더는 삭제할 수 없습니다."}
 ```
 
-오류가 발생하는 것이 정상이다.
+오류가 발생하는 것이 정상이다. (48-1단계를 하지 않았다면 500으로 보인다.)
 
 ---
 
@@ -2603,7 +2710,7 @@ My Drive
 GET /api/folders/{id}/path
 ```
 
-API를 추가한다.
+API를 추가할 수 있다. (현재 프로젝트에는 없고, Day 6 Frontend는 폴더 이동 경로를 화면 상태로 관리해 Breadcrumb를 만든다.)
 
 ---
 
@@ -2621,7 +2728,7 @@ GET /api/files?folderId=1
 GET /api/files/search?q=report
 ```
 
-를 추가한다.
+를 추가할 수 있다. (확장 과제 — 현재 프로젝트에는 아직 없다.)
 
 PostgreSQL에서:
 
@@ -2680,7 +2787,7 @@ Permanent Delete
 
 가 더 좋다.
 
-Day 6~7에서 추가한다.
+이후 확장 과제로 남겨 둔다. (Day 6 Frontend 사이드바에 `휴지통` 메뉴는 있지만, Day 7까지 Backend의 Trash/Restore 기능은 구현하지 않는다.)
 
 ---
 
@@ -2913,21 +3020,48 @@ Compose에서 Backend를 같이 실행한다면:
 
 ```yaml
 environment:
-        DB_URL: jdbc:postgresql://host.docker.internal:5432/cloud_file
+  DB_URL: jdbc:postgresql://host.docker.internal:5432/cloud_file
   DB_USERNAME: cloud_user
   DB_PASSWORD: cloud_password
 ```
 
-를 사용한다.
+를 사용한다. (현재 프로젝트는 같은 값을 `SPRING_DATASOURCE_URL / SPRING_DATASOURCE_USERNAME / SPRING_DATASOURCE_PASSWORD`로도 함께 넣는다. 14단계 설정 덕분에 둘 중 어느 쪽이든 동작한다.)
 
 ---
 
 # 101. Compose 예시
 
 기존 Compose 파일을 무조건 덮어쓰지 말고 필요한 부분을 통합한다.
+(Day 2에서 만든 `nginx` 서비스는 아래 예시에서 생략했을 뿐 **지우지 않는다.** YAML은 들여쓰기가 틀리면 바로 오류가 나므로 스페이스 2칸 단위를 정확히 지킨다.)
 
 ```yaml
 services:
+  cloud-file-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AWS_REGION: ${AWS_REGION:-ap-northeast-2}
+      S3_BUCKET: ${S3_BUCKET:-local-cloud-file-service}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      DB_URL: jdbc:postgresql://host.docker.internal:5432/cloud_file
+      DB_USERNAME: cloud_user
+      DB_PASSWORD: cloud_password
+      SPRING_DATASOURCE_URL: jdbc:postgresql://host.docker.internal:5432/cloud_file
+      SPRING_DATASOURCE_USERNAME: cloud_user
+      SPRING_DATASOURCE_PASSWORD: cloud_password
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "18080:8080"
+    networks:
+      - cloud-network
+
+  # nginx: ... (Day 2 설정 그대로 유지)
 
   postgres:
     image: postgres:16
@@ -2940,49 +3074,90 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-
-        cloud-file-service:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: cloud-file-backend
-    ports:
-        - "18080:8080"
-    environment:
-      AWS_REGION: ${AWS_REGION}
-      S3_BUCKET: ${S3_BUCKET}
-
-      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
-
-                        DB_URL: jdbc:postgresql://host.docker.internal:5432/cloud_file
-      DB_USERNAME: cloud_user
-      DB_PASSWORD: cloud_password
-                extra_hosts:
-                        - "host.docker.internal:host-gateway"
-
-    depends_on:
-      - postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cloud_user -d cloud_file"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - cloud-network
 
 volumes:
   postgres_data:
+
+networks:
+  cloud-network:
+    driver: bridge
 ```
+
+`${AWS_ACCESS_KEY_ID}` 같은 값은 Compose를 실행하는 **터미널의 환경변수**에서 읽어 온다. 실제 키 값을 `docker-compose.yml`에 직접 적지 않는다.
 
 **이 Credential 전달 방식은 로컬 학습용이다. ECS에서는 Task Role을 사용하도록 변경한다.**
 
 ---
 
-# 102. Docker Compose 실행
+# 101-1. Nginx 설정도 함께 바꾼다
 
-JAR을 먼저 만든다.
+Backend의 호스트 포트가 `18080`으로 바뀌었으므로 Day 2의 Nginx 설정도 현재 저장소와 같게 맞춘다.
 
-```bash
-cd backend
-./gradlew clean build
-cd ..
+`docker-compose.yml`의 `nginx` 서비스:
+
+```yaml
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - cloud-file-service
+    networks:
+      - cloud-network
 ```
 
-실행:
+`nginx/nginx.conf` 전체:
+
+```nginx
+events {}
+
+http {
+
+    upstream backend {
+        server host.docker.internal:18080;
+    }
+
+    server {
+
+        listen 80;
+
+        location / {
+
+            proxy_pass http://backend;
+
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+    }
+}
+```
+
+> Day 2처럼 `server cloud-file-service:8080;`(Docker DNS)으로 두어도 같은 `cloud-network` 안이라 동작한다. 이 저장소는 호스트 포트 `18080`을 거치는 방식을 쓰고, 그래서 `extra_hosts`가 필요하다. 둘 중 하나만 고르면 된다.
+
+102단계 실행 후 `curl http://localhost/health`로 Nginx 경유 요청도 확인한다.
+
+---
+
+# 102. Docker Compose 실행
+
+먼저 49~50단계에서 실행한 `bootRun`은 `Ctrl + C`로 종료한다.
+
+현재 `Dockerfile`은 multi-stage 빌드라서 이미지 안에서 `./gradlew bootJar`로 JAR을 만든다. 따라서 로컬에서 JAR을 따로 만들 필요는 없다. (로컬 빌드 확인을 원하면 49단계처럼 `cd backend && ./gradlew clean build && cd ..`)
+
+실행 (프로젝트 루트에서, `S3_BUCKET`·AWS credential 환경변수가 설정된 터미널):
 
 ```bash
 docker compose up --build
@@ -3001,8 +3176,10 @@ docker compose ps
 # 104. Backend 로그
 
 ```bash
-docker compose logs -f backend
+docker compose logs -f cloud-file-service
 ```
+
+(Compose의 backend 서비스 이름은 `backend`가 아니라 `cloud-file-service`다.)
 
 ---
 
@@ -3021,8 +3198,10 @@ echo "Docker File System Test" > docker-test.txt
 ```
 
 ```bash
-curl -X POST   -F "file=@docker-test.txt"   http://localhost:8080/api/files
+curl -X POST   -F "file=@docker-test.txt"   http://localhost:18080/api/files
 ```
+
+Compose backend는 호스트 포트 `18080`으로 공개되어 있으므로 `8080`이 아니라 `18080`을 사용한다.
 
 S3:
 
@@ -3172,6 +3351,8 @@ cloud-file-service/
 └── .gitignore
 ```
 
+위 그림은 Day 3.5에서 새로 만들거나 바꾼 파일 중심이다. 실제 프로젝트에는 Day 1~2의 `BackendApplication.java`, `HealthController.java`, `domain/`, `exception/`(`GlobalExceptionHandler` — 48-1단계에서 수정), `CreateFileRequest.java`, `FileMetadataRepository.java`, `InMemoryFileMetadataRepository.java`, `FileMetadataService.java`, 테스트 코드, `nginx/nginx.conf`도 그대로 남아 있다.
+
 ---
 
 # 110. Day 3.5 완료 체크리스트
@@ -3203,6 +3384,7 @@ cloud-file-service/
 - [ ] FileService
 - [ ] S3 연동
 - [ ] DB 연동
+- [ ] GlobalExceptionHandler 400/409 처리 추가
 
 ## API
 
@@ -3265,11 +3447,17 @@ DB에서도 파일 삭제 확인
 
 # 112. Git Commit
 
-모든 테스트가 성공하면:
+모든 테스트가 성공하면 먼저 테스트용으로 만든 파일을 지운다 (만든 위치에서):
+
+```bash
+rm -f report.txt downloaded.txt docker-test.txt
+```
 
 ```bash
 git status
 ```
+
+`git status`에 `.env`, 테스트 파일, AWS credential 관련 파일이 보이지 않는지 확인한 뒤:
 
 ```bash
 git add .
@@ -3392,7 +3580,7 @@ IAM
 ECR
 ECS
 RDS
-ALB
+ALB (선택 — 현재 infra/terraform에는 ALB가 없다)
 ```
 
 ---

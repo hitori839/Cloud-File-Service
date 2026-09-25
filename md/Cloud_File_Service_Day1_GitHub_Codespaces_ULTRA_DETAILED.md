@@ -1,7 +1,7 @@
 # Cloud File Service — Day 1
 # GitHub Codespaces 초보자용 완전 상세 실습 가이드
 
-> 참고: 이 문서는 로컬 개발/기초 프로젝트 흐름을 설명하는 역사적 문서이며, 현재 실 배포는 Day 3~4의 AWS S3 + ECS 경로를 실제 기준으로 따라야 한다. 현재 프로젝트는 JPA/PostgreSQL을 사용하므로 `./gradlew test`와 `bootRun` 전에 로컬 PostgreSQL을 실행해야 한다. ECS에서는 `localhost`를 DB 주소로 쓰면 안 되고, `securityGroups`와 Public IP 검증을 우선해야 한다.
+> 참고: 이 문서는 로컬 개발/기초 프로젝트 흐름을 설명하는 역사적 문서이며, 현재 실 배포는 Day 3~4의 AWS S3 + ECS 경로를 실제 기준으로 따라야 한다. Day 7까지 완성된 현재 저장소는 JPA/PostgreSQL(Day 3.5에서 추가)을 사용하므로, 완성된 저장소에서 `./gradlew test`와 `bootRun`을 실행할 때는 먼저 저장소 루트에서 `docker compose up -d postgres`로 로컬 PostgreSQL을 실행해야 한다. (Day 1을 처음부터 따라가는 시점에는 DB가 필요 없다.) ECS에서는 `localhost`를 DB 주소로 쓰면 안 되고, `securityGroups`와 Public IP 검증을 우선해야 한다.
 
 > **현재 구현 기준:** 이 문서의 초기 REST와 In-Memory 예제는 학습 기록이다. 현재 프로젝트는 `POST /api/files`에서 JSON metadata만 생성하지 않고 `multipart/form-data` 파일을 업로드하며, PostgreSQL에는 metadata를 저장하고 실제 파일 내용은 S3에 저장한다. 현재 API와 실행 방법은 루트 `README.md`를 기준으로 확인한다.
 
@@ -46,15 +46,10 @@ GET    /api/files/{id}
 DELETE /api/files/{id}
 ```
 
-오늘 끝나면 최소한:
+오늘 끝나면 최소한 `backend/` 디렉터리에서:
 
 ```bash
-docker compose up -d postgres
-```
-
-현재 프로젝트는 JPA가 시작될 때 PostgreSQL 연결을 확인하므로, 위 명령으로 DB를 먼저 실행한다.
-
-```bash
+cd backend
 ./gradlew test
 ```
 
@@ -65,6 +60,8 @@ docker compose up -d postgres
 ```
 
 가 성공하고, 서버를 실행한 뒤 `curl`로 API를 직접 호출할 수 있어야 한다.
+
+> **DB 관련 주의:** Day 1 시점의 프로젝트에는 JPA/PostgreSQL 의존성이 없으므로 DB 없이 `./gradlew test`와 `bootRun`이 동작한다. JPA/PostgreSQL은 Day 3.5에서 추가된다. 이미 Day 7까지 완성된 현재 저장소에서 Day 1 명령을 다시 실행하는 경우에만, 저장소 루트에서 먼저 `docker compose up -d postgres`로 PostgreSQL을 띄운 뒤 `backend/`에서 Gradle 명령을 실행한다.
 
 ---
 
@@ -404,17 +401,20 @@ cloud-file-service
 
 ```text
 cloud-file-service/
-├── backend/
-├── nginx/
-├── terraform/
-├── k8s/
-├── observability/
-├── docs/
+├── backend/            # Spring Boot (Day 1~)
+├── frontend/           # React + Vite (Day 6)
+├── nginx/              # nginx.conf (Day 2)
+├── infra/              # ECS task definition JSON 등
+│   └── terraform/      # Terraform (Day 5~)
+├── k8s/                # Kubernetes manifest (Day 6~)
+├── md/                 # 학습 문서
 ├── Dockerfile
 ├── docker-compose.yml
 ├── README.md
 └── .gitignore
 ```
+
+> 위 구조는 Day 7까지 완료한 실제 저장소 기준이다. Terraform은 루트 `terraform/`이 아니라 `infra/terraform/`에 둔다.
 
 오늘은 `backend` 중심으로 만든다.
 
@@ -590,9 +590,10 @@ java -version
 javac -version
 ```
 
-Gradle Wrapper가 있다면:
+Gradle Wrapper가 있다면 (`gradlew`는 `backend/` 안에 있으므로 먼저 이동한다):
 
 ```bash
+cd backend
 ./gradlew --version
 ```
 
@@ -726,7 +727,13 @@ Spring Initializr 또는 이미 만든 프로젝트를 사용한다.
 Project: Gradle - Groovy
 Language: Java
 Packaging: Jar
+Group: com.example
+Artifact: backend
+Name: backend
+Package name: com.example.backend
 ```
+
+> 이후 모든 Day 문서(Day 3, Day 3.5 등)와 실제 저장소는 패키지 `com.example.backend`, 메인 클래스 `BackendApplication`을 사용한다. 다른 패키지명으로 만들면 이후 문서의 `package`/`import` 문을 모두 직접 바꿔야 하므로 위 값을 그대로 쓰는 것을 권장한다. 생성된 프로젝트는 저장소 루트의 `backend/` 디렉터리에 둔다.
 
 의존성:
 
@@ -737,7 +744,9 @@ Spring Boot Actuator
 Spring Boot Test
 ```
 
-버전은 현재 프로젝트에서 선택한 호환 가능한 버전을 유지한다.
+> Spring Boot Test는 Initializr가 자동으로 추가한다. **Spring Data JPA / PostgreSQL Driver / AWS SDK는 Day 1에서 추가하지 않는다.** (AWS SDK S3는 Day 3, JPA/PostgreSQL은 Day 3.5에서 추가) 지금 JPA를 넣으면 DB 없이 `./gradlew test`와 `bootRun`이 실패한다.
+
+버전은 현재 프로젝트에서 선택한 호환 가능한 버전을 유지한다. (현재 저장소 기준: Spring Boot 4.1.x, Java 25 toolchain. Spring Boot 4에서는 "Spring Web"을 선택하면 `build.gradle`에 `spring-boot-starter-webmvc`가 추가된다.)
 
 ---
 
@@ -750,8 +759,8 @@ backend/
 ├── src/
 │   ├── main/
 │   │   ├── java/
-│   │   │   └── com/example/cloudfileservice/
-│   │   │       ├── CloudFileServiceApplication.java
+│   │   │   └── com/example/backend/
+│   │   │       ├── BackendApplication.java
 │   │   │       ├── controller/
 │   │   │       │   ├── HealthController.java
 │   │   │       │   └── FileController.java
@@ -770,7 +779,7 @@ backend/
 │   │   │           ├── FileNotFoundException.java
 │   │   │           └── GlobalExceptionHandler.java
 │   │   └── resources/
-│   │       └── application.yml
+│   │       └── application.properties
 │   └── test/
 │       └── java/
 ├── build.gradle
@@ -821,20 +830,20 @@ Data
 
 # 19. Application 클래스
 
-`CloudFileServiceApplication.java`
+`BackendApplication.java`
 
 ```java
-package com.example.cloudfileservice;
+package com.example.backend;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 @SpringBootApplication
-public class CloudFileServiceApplication {
+public class BackendApplication {
 
     public static void main(String[] args) {
         SpringApplication.run(
-                CloudFileServiceApplication.class,
+                BackendApplication.class,
                 args
         );
     }
@@ -891,14 +900,26 @@ Spring Boot 애플리케이션의 핵심 시작 애노테이션이다.
 
 ---
 
-# 22. application.yml
+# 22. application.properties (설정 파일)
 
-`src/main/resources/application.yml`
+Spring Initializr는 `backend/src/main/resources/application.properties`를 만들어 준다. **이후 Day 3(S3), Day 3.5(PostgreSQL), Day 4(ECS 환경변수), Day 7 문서가 모두 이 `application.properties`를 수정하므로 설정은 이 파일 하나에 둔다.**
+
+`backend/src/main/resources/application.properties`
+
+```properties
+spring.application.name=backend
+
+server.port=8080
+```
+
+> **주의:** 같은 폴더에 `application.yml`을 추가로 만들면 두 파일이 동시에 로드되고, 같은 키는 `application.properties` 값이 우선한다. 설정이 어디서 왔는지 헷갈리므로 초보자는 한 파일만 사용한다. 특히 `cloud.aws.*` 같은 키는 현재 코드가 읽지 않는다(현재 코드는 `aws.region`, `aws.s3.bucket`을 읽는다).
+
+참고로 같은 설정을 YAML(`application.yml`)로 쓰면 다음과 같다.
 
 ```yaml
 spring:
   application:
-    name: cloud-file-service
+    name: backend
 
 server:
   port: 8080
@@ -1085,11 +1106,11 @@ Spring Boot가 이 변환을 도와준다.
 파일:
 
 ```text
-src/main/java/com/example/cloudfileservice/controller/HealthController.java
+src/main/java/com/example/backend/controller/HealthController.java
 ```
 
 ```java
-package com.example.cloudfileservice.controller;
+package com.example.backend.controller;
 
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -1274,7 +1295,7 @@ Scale
 `FileStatus.java`
 
 ```java
-package com.example.cloudfileservice.domain;
+package com.example.backend.domain;
 
 public enum FileStatus {
     REGISTERED,
@@ -1333,7 +1354,7 @@ FileStatus.DELETED
 `FileMetadata.java`
 
 ```java
-package com.example.cloudfileservice.domain;
+package com.example.backend.domain;
 
 import java.time.Instant;
 
@@ -1477,7 +1498,7 @@ JSON
 `CreateFileRequest.java`
 
 ```java
-package com.example.cloudfileservice.dto;
+package com.example.backend.dto;
 
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Positive;
@@ -1571,10 +1592,10 @@ public ... create(
 `FileResponse.java`
 
 ```java
-package com.example.cloudfileservice.dto;
+package com.example.backend.dto;
 
-import com.example.cloudfileservice.domain.FileMetadata;
-import com.example.cloudfileservice.domain.FileStatus;
+import com.example.backend.domain.FileMetadata;
+import com.example.backend.domain.FileStatus;
 
 import java.time.Instant;
 
@@ -1653,9 +1674,9 @@ S3
 `FileMetadataRepository.java`
 
 ```java
-package com.example.cloudfileservice.repository;
+package com.example.backend.repository;
 
-import com.example.cloudfileservice.domain.FileMetadata;
+import com.example.backend.domain.FileMetadata;
 
 import java.util.List;
 import java.util.Optional;
@@ -1717,9 +1738,9 @@ Service가:
 `InMemoryFileMetadataRepository.java`
 
 ```java
-package com.example.cloudfileservice.repository;
+package com.example.backend.repository;
 
-import com.example.cloudfileservice.domain.FileMetadata;
+import com.example.backend.domain.FileMetadata;
 import org.springframework.stereotype.Repository;
 
 import java.util.ArrayList;
@@ -1883,13 +1904,13 @@ Optional.empty()
 `FileMetadataService.java`
 
 ```java
-package com.example.cloudfileservice.service;
+package com.example.backend.service;
 
-import com.example.cloudfileservice.domain.FileMetadata;
-import com.example.cloudfileservice.domain.FileStatus;
-import com.example.cloudfileservice.dto.CreateFileRequest;
-import com.example.cloudfileservice.exception.FileNotFoundException;
-import com.example.cloudfileservice.repository.FileMetadataRepository;
+import com.example.backend.domain.FileMetadata;
+import com.example.backend.domain.FileStatus;
+import com.example.backend.dto.CreateFileRequest;
+import com.example.backend.exception.FileNotFoundException;
+import com.example.backend.repository.FileMetadataRepository;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -2110,7 +2131,7 @@ public FileMetadataService(
 `FileNotFoundException.java`
 
 ```java
-package com.example.cloudfileservice.exception;
+package com.example.backend.exception;
 
 public class FileNotFoundException
         extends RuntimeException {
@@ -2162,7 +2183,7 @@ Service는 이것을:
 `GlobalExceptionHandler.java`
 
 ```java
-package com.example.cloudfileservice.exception;
+package com.example.backend.exception;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -2229,12 +2250,12 @@ HTTP 404
 `FileController.java`
 
 ```java
-package com.example.cloudfileservice.controller;
+package com.example.backend.controller;
 
-import com.example.cloudfileservice.domain.FileMetadata;
-import com.example.cloudfileservice.dto.CreateFileRequest;
-import com.example.cloudfileservice.dto.FileResponse;
-import com.example.cloudfileservice.service.FileMetadataService;
+import com.example.backend.domain.FileMetadata;
+import com.example.backend.dto.CreateFileRequest;
+import com.example.backend.dto.FileResponse;
+import com.example.backend.service.FileMetadataService;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -2589,14 +2610,14 @@ curl -i -X DELETE \
 테스트 파일 예:
 
 ```text
-src/test/java/com/example/cloudfileservice/repository/InMemoryFileMetadataRepositoryTest.java
+src/test/java/com/example/backend/repository/InMemoryFileMetadataRepositoryTest.java
 ```
 
 ```java
-package com.example.cloudfileservice.repository;
+package com.example.backend.repository;
 
-import com.example.cloudfileservice.domain.FileMetadata;
-import com.example.cloudfileservice.domain.FileStatus;
+import com.example.backend.domain.FileMetadata;
+import com.example.backend.domain.FileStatus;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -2641,12 +2662,16 @@ class InMemoryFileMetadataRepositoryTest {
 
 # 78. Service Test
 
-```java
-package com.example.cloudfileservice.service;
+```text
+src/test/java/com/example/backend/service/FileMetadataServiceTest.java
+```
 
-import com.example.cloudfileservice.dto.CreateFileRequest;
-import com.example.cloudfileservice.exception.FileNotFoundException;
-import com.example.cloudfileservice.repository.InMemoryFileMetadataRepository;
+```java
+package com.example.backend.service;
+
+import com.example.backend.dto.CreateFileRequest;
+import com.example.backend.exception.FileNotFoundException;
+import com.example.backend.repository.InMemoryFileMetadataRepository;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -2701,7 +2726,10 @@ class FileMetadataServiceTest {
 
 # 79. 테스트 실행
 
+`backend/` 디렉터리에서 실행한다.
+
 ```bash
+cd backend
 ./gradlew test
 ```
 
@@ -3062,14 +3090,14 @@ Day 1 — Spring Boot Application Foundation
 ## API
 
 GET /health
-POST /api/files  (multipart upload)
-GET /api/files?folderId={id}
-GET /api/files/{id}/download
+POST /api/files  (JSON metadata)
+GET /api/files
+GET /api/files/{id}
 DELETE /api/files/{id}
 
 ## Current Storage
 
-PostgreSQL metadata + Amazon S3 file contents
+In-Memory (서버 재시작 시 데이터 소멸)
 
 ## Future
 
@@ -3313,8 +3341,8 @@ backend/
 ├── src/
 │   ├── main/
 │   │   ├── java/
-│   │   │   └── com/example/cloudfileservice/
-│   │   │       ├── CloudFileServiceApplication.java
+│   │   │   └── com/example/backend/
+│   │   │       ├── BackendApplication.java
 │   │   │       ├── controller/
 │   │   │       │   ├── HealthController.java
 │   │   │       │   └── FileController.java
@@ -3333,8 +3361,12 @@ backend/
 │   │   │           ├── FileNotFoundException.java
 │   │   │           └── GlobalExceptionHandler.java
 │   │   └── resources/
-│   │       └── application.yml
+│   │       └── application.properties
 │   └── test/
+│       └── java/com/example/backend/
+│           ├── BackendApplicationTests.java
+│           ├── repository/InMemoryFileMetadataRepositoryTest.java
+│           └── service/FileMetadataServiceTest.java
 │
 ├── build.gradle
 ├── settings.gradle
@@ -3398,7 +3430,7 @@ Result:
 
 Result:
 
-### GET /api/files/{id}/download
+### GET /api/files/{id}
 
 Result:
 
@@ -3805,7 +3837,7 @@ STEP 4
 Spring Boot 실행
         ↓
 STEP 5
-application.yml
+application.properties
         ↓
 STEP 6
 Health API

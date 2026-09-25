@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloud-file-service
+  namespace: cloud-file-service
+spec:
+  replicas: 2
+
+  selector:
+    matchLabels:
+      app: cloud-file-service
+
+  template:
+    metadata:
+      labels:
+        app: cloud-file-service
+
+    spec:
+      serviceAccountName: cloud-file-service
+
+      containers:
+        - name: backend
+          image: 358545165495.dkr.ecr.ap-northeast-2.amazonaws.com/cloud-file-service-dev:latest
+          imagePullPolicy: Always
+
+          ports:
+            - containerPort: 8080
+
+          envFrom:
+            - configMapRef:
+                name: cloud-file-service-config
+
+            - secretRef:
+                name: cloud-file-service-secret
+
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 10
+
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 20
+
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
