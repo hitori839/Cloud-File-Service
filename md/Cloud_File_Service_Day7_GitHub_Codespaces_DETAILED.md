@@ -223,7 +223,7 @@ docker compose ps
 또한 Day 5의 RDS는 `publicly_accessible = false`이고 private subnet에
 있으므로 **Codespaces의 kind Pod에서는 RDS에 연결할 수 없다.** 따라서 kind
 경로에서는 `docker compose`로 띄운 로컬 PostgreSQL 컨테이너
-(`cloud-file-postgres`)를 kind 네트워크에 연결해서 사용한다. 구체적인 방법은
+(`cloud-file-postgres`)를 kind 네트워크의 Gateway IP로 접속해서 사용한다. 구체적인 방법은
 [13. 실제 Secret 생성](#13-실제-secret-생성)에서 설명한다.
 
 RDS endpoint는 EKS 경로([48-1](#48-1-선택-eks에-배포하기))에서만 사용한다.
@@ -671,37 +671,39 @@ kubectl config current-context
 # kind-cloud-file-service
 ```
 
-## 13-1. 로컬 PostgreSQL을 kind 네트워크에 연결
+## 13-1. kind Pod에서 접속할 PostgreSQL 주소 확인
 
 kind 노드는 `kind`라는 Docker 네트워크에서 실행되고, docker compose의
-PostgreSQL(`cloud-file-postgres`)은 compose 네트워크에서 실행된다. 두 네트워크는
-서로 보이지 않으므로 PostgreSQL 컨테이너를 `kind` 네트워크에도 연결한다.
+PostgreSQL(`cloud-file-postgres`)은 호스트의 `5432` 포트로 publish되어 있다.
+kind Pod는 **`kind` 네트워크의 Gateway IP**(= 호스트)를 통해 이 포트에 접속한다.
 
 프로젝트 루트에서:
 
 ``` bash
 docker compose up -d postgres
-docker network connect kind cloud-file-postgres
-```
 
-이미 연결되어 있다는 오류(`already exists`)는 무시해도 된다.
-
-`kind` 네트워크에서의 PostgreSQL IP를 확인한다.
-
-``` bash
-PG_IP=$(docker inspect \
-  -f '{{with index .NetworkSettings.Networks "kind"}}{{.IPAddress}}{{end}}' \
-  cloud-file-postgres)
+PG_IP=$(docker network inspect kind \
+  -f '{{range .IPAM.Config}}{{.Gateway}} {{end}}' \
+  | tr ' ' '\n' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
 echo "$PG_IP"
 ```
 
-`172.18.0.3` 같은 IP가 출력되어야 한다. 빈 값이면 `docker network connect`를
-다시 확인한다.
+`172.18.0.1`, `172.20.0.1`처럼 **끝자리가 `.1`인 IPv4**가 출력되어야 한다.
 
-> PostgreSQL 컨테이너를 다시 만들거나 Codespace를 재시작하면 IP가 바뀔 수
-> 있다. 그때는 13-1과 13-2를 다시 실행하고
-> `kubectl rollout restart deployment/cloud-file-service -n cloud-file-service`
-> 로 Pod를 재시작한다.
+> `docker network connect kind cloud-file-postgres`로 PostgreSQL 컨테이너를
+> kind 네트워크에 직접 붙이고 그 컨테이너 IP(`172.x.0.3` 등)를 쓰는 방법은
+> Codespaces(Docker 29)에서 IPv4 연결이 `Connect timed out`으로 실패하는 경우가
+> 있어 사용하지 않는다. Gateway IP는 kind 네트워크가 유지되는 한 바뀌지 않는다.
+
+연결 확인(선택):
+
+``` bash
+docker exec cloud-file-service-control-plane \
+  bash -c "timeout 3 bash -c '</dev/tcp/$PG_IP/5432' && echo ok || echo fail"
+```
+
+`ok`가 나와야 한다. `fail`이면 `docker compose ps`로 postgres가 `healthy`인지,
+`docker-compose.yml`에 `ports: - "5432:5432"`가 있는지 확인한다.
 
 ## 13-2. Secret 만들기
 
